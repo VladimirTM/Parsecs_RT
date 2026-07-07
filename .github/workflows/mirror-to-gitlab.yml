@@ -1,0 +1,22 @@
+name: Mirror to GitLab
+
+on:
+  push:
+    branches:
+      - '**'
+  delete: {}
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push mirror to GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          git remote add gitlab https://mihai.ghimpau:${GITLAB_TOKEN}@gitlab.upt.ro/mihai.ghimpau/Parsecs_RT.git
+          git push --prune gitlab 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
