@@ -1,0 +1,3 @@
+[submodule "ringbuffer"]
+	path = ringbuffer
+	url = ssh://git@gitlab.upt.ro:8822/dsplabs/ecomap/ringbuffer.git
