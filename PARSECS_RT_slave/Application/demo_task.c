@@ -1,8 +1,11 @@
 /*
- * Slave side of the I2C demo. Runs in interrupt LISTEN mode and echoes back an
- * uppercased copy of each fixed-size message, one byte per Seq call. Completed
- * rounds are pushed into a log ring that the task drains to USB CDC. Persistent
- * bus errors trigger a full peripheral re-init.
+ * Slave side of the I2C demo (PARSECS_LAYER1 ring buffer over I2C DMA).
+ * On a write from the master, the received byte lands in rx_ring; on a
+ * read, one byte is popped from tx_ring (or 0x00 if empty) and shifted
+ * out. Runs in interrupt listen mode; each completed round just sets a
+ * ready flag for the task to verify and log over USB, mirroring the
+ * master's byte_ready pattern. Persistent bus errors trigger a full
+ * re-init.
  */
 
 #include "demo_task.h"
@@ -11,12 +14,13 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <ringbuf.h>
 #include "main.h"
 #include "i2c.h"
 #include "usbd_cdc_if.h"
 
-#define MSG_LEN             16U             /* must match the master */
-#define LOG_SLOTS           8U              /* power of two */
+#define L1_RING_SIZE        16U             /* matches RAW_RING_BUFFER_SIZE upstream */
+#define DUMMY_BYTE          0x00U
 #define MAX_CONSEC_ERRORS   10U
 
 #define LED_HEARTBEAT_Pin   LD4_Pin     /* green  */
@@ -30,26 +34,23 @@ static inline void led_warn(void)      { HAL_GPIO_TogglePin(GPIOD, LED_WARNING_P
 static inline void led_fault_on(void)  { HAL_GPIO_WritePin(GPIOD, LED_FAULT_Pin, GPIO_PIN_SET); }
 static inline void led_fault_off(void) { HAL_GPIO_WritePin(GPIOD, LED_FAULT_Pin, GPIO_PIN_RESET); }
 
-typedef struct {
-	uint8_t rx[MSG_LEN];
-	uint8_t tx[MSG_LEN];
-} log_entry_t;
-
 typedef enum { PHASE_RECEIVE, PHASE_TRANSMIT } phase_t;
 
-static uint8_t      rx_buf[MSG_LEN];
-static uint8_t      tx_buf[MSG_LEN];
+/* Both rings are only touched from ISR context (AddrCallback /
+ * SlaveRxCpltCallback) once seeded, so ringbuf.c's lack of locking is fine. */
+static tRingBufObject       tx_ring;
+static tRingBufObject       rx_ring;
+static uint8_t              tx_ring_mem[L1_RING_SIZE];
+static uint8_t              rx_ring_mem[L1_RING_SIZE];
 
-static log_entry_t          log_ring[LOG_SLOTS];
-static volatile uint8_t     log_head = 0U;     /* ISR writes; task reads */
-static volatile uint8_t     log_tail = 0U;     /* task writes; ISR reads */
+static volatile uint8_t     rx_byte_val;
+static volatile uint8_t     tx_byte_val;
+
+static volatile bool        round_ready = false;   /* ISR sets; task clears */
 
 static volatile uint16_t    error_count = 0U;
 static volatile bool        listening   = false;
 static volatile phase_t     phase       = PHASE_RECEIVE;
-
-static volatile uint16_t    rx_byte = 0U;
-static volatile uint16_t    tx_byte = 0U;
 
 /* error_count is shared with the ISR, so keep the read-modify-write atomic. */
 static void error_inc(void)
@@ -76,27 +77,11 @@ static void usb_print(const char *msg)
 	}
 }
 
-static void to_uppercase(const uint8_t *src, uint8_t *dst)
+/* ringbuf.h has no peek, so read at ulReadIndex directly without advancing -
+ * lets a failed HAL call leave the byte in tx_ring to retry next time. */
+static uint8_t ring_peek_one(const tRingBufObject *ring)
 {
-	for (uint16_t i = 0U; i < MSG_LEN; i++)
-	{
-		uint8_t c = src[i];
-		dst[i] = (c >= 'a' && c <= 'z') ? (uint8_t)(c - ('a' - 'A')) : c;
-	}
-}
-
-/* Flag the reply's last byte LAST so the master's terminating NACK is routed
- * to ListenCplt as a normal end-of-read; the request ends on the master STOP. */
-static uint32_t slave_rx_frame(uint16_t i)
-{
-	return (i == 0U) ? I2C_FIRST_FRAME : I2C_NEXT_FRAME;
-}
-
-static uint32_t slave_tx_frame(uint16_t i)
-{
-	if (i == 0U)             return I2C_FIRST_FRAME;
-	if (i == (MSG_LEN - 1U)) return I2C_LAST_FRAME;
-	return I2C_NEXT_FRAME;
+	return ring->pucBuf[ring->ulReadIndex];
 }
 
 static void start_listen(void)
@@ -107,37 +92,38 @@ static void start_listen(void)
 
 static void i2c_resync(void)
 {
-	/* Mask the I2C IRQs first so a late callback can't race the teardown. */
+	/* Mask I2C + DMA IRQs so a late callback can't race the teardown. */
 	HAL_NVIC_DisableIRQ(I2C1_EV_IRQn);
 	HAL_NVIC_DisableIRQ(I2C1_ER_IRQn);
+	HAL_NVIC_DisableIRQ(DMA1_Stream0_IRQn);
+	HAL_NVIC_DisableIRQ(DMA1_Stream6_IRQn);
+
+	/* Abort first, or HAL_DMA_DeInit() below just no-ops on a busy stream. */
+	if (hi2c1.hdmarx != NULL) HAL_DMA_Abort(hi2c1.hdmarx);
+	if (hi2c1.hdmatx != NULL) HAL_DMA_Abort(hi2c1.hdmatx);
+
 	HAL_I2C_DeInit(&hi2c1);
 	HAL_NVIC_ClearPendingIRQ(I2C1_EV_IRQn);
 	HAL_NVIC_ClearPendingIRQ(I2C1_ER_IRQn);
+	HAL_NVIC_ClearPendingIRQ(DMA1_Stream0_IRQn);
+	HAL_NVIC_ClearPendingIRQ(DMA1_Stream6_IRQn);
 	led_fault_on();             /* latch the fault while IRQs are still off */
+
+	/* MX_I2C1_Init() re-enables the I2C1 pair itself; DMA1 needs it here. */
+	HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
+	HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
+
 	MX_I2C1_Init();
 	listening = false;
 	error_reset();
 	phase = PHASE_RECEIVE;
 }
 
+/* Mirrors the master's byte_ready flag - defers the LED/error-reset work
+ * to the task instead of doing it here in ISR context. */
 static void round_complete(void)
 {
-	led_heartbeat();
-	led_fault_off();
-
-	uint8_t next = (uint8_t)((log_head + 1U) & (LOG_SLOTS - 1U));
-	if (next != log_tail)
-	{
-		memcpy(log_ring[log_head].rx, rx_buf, MSG_LEN);
-		memcpy(log_ring[log_head].tx, tx_buf, MSG_LEN);
-		log_head = next;
-	}
-	else
-	{
-		led_warn();             /* USB too slow to drain: entry dropped */
-	}
-
-	error_reset();
+	round_ready = true;
 }
 
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
@@ -146,16 +132,13 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
 	if (hi2c->Instance != I2C1) return;
 	(void)AddrMatchCode;
 
-	/* On F4, TransferDirection == TRANSMIT means the master is writing (we
-	 * receive); RECEIVE means the master is reading (we transmit). Arm only
-	 * the first byte; the Cplt callbacks stream the rest. */
+	/* TRANSMIT = master writing to us (we receive); RECEIVE = master
+	 * reading from us (we transmit). One byte per direction. */
 	if (TransferDirection == I2C_DIRECTION_TRANSMIT)
 	{
-		phase   = PHASE_RECEIVE;
-		rx_byte = 0U;
-		memset(rx_buf, 0, sizeof(rx_buf));
-		if (HAL_I2C_Slave_Seq_Receive_IT(hi2c, &rx_buf[0], 1U,
-		                                 slave_rx_frame(0U)) != HAL_OK)
+		phase = PHASE_RECEIVE;
+		if (HAL_I2C_Slave_Seq_Receive_DMA(hi2c, (uint8_t *)&rx_byte_val, 1U,
+		                                   I2C_FIRST_AND_LAST_FRAME) != HAL_OK)
 		{
 			error_inc();
 			listening = false;
@@ -163,10 +146,19 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
 	}
 	else
 	{
-		phase   = PHASE_TRANSMIT;
-		tx_byte = 0U;
-		if (HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &tx_buf[0], 1U,
-		                                  slave_tx_frame(0U)) != HAL_OK)
+		phase = PHASE_TRANSMIT;
+		/* Peek, don't pop - only consumed once HAL actually accepts it. */
+		bool have_tx = !RingBufEmpty(&tx_ring);
+		tx_byte_val = have_tx ? ring_peek_one(&tx_ring) : DUMMY_BYTE;
+		if (HAL_I2C_Slave_Seq_Transmit_DMA(hi2c, (uint8_t *)&tx_byte_val, 1U,
+		                                    I2C_FIRST_AND_LAST_FRAME) == HAL_OK)
+		{
+			if (have_tx)
+			{
+				RingBufAdvanceRead(&tx_ring, 1U);
+			}
+		}
+		else
 		{
 			error_inc();
 			listening = false;
@@ -178,44 +170,24 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	if (hi2c->Instance != I2C1) return;
 
-	rx_byte++;
-	if (rx_byte < MSG_LEN)
+	if (!RingBufFull(&rx_ring))
 	{
-		if (HAL_I2C_Slave_Seq_Receive_IT(hi2c, &rx_buf[rx_byte], 1U,
-		                                 slave_rx_frame(rx_byte)) != HAL_OK)
-		{
-			error_inc();
-			listening = false;
-		}
-		return;
+		RingBufWriteOne(&rx_ring, rx_byte_val);
 	}
-
-	to_uppercase(rx_buf, tx_buf);   /* reply ready before the read phase */
 }
 
 void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	if (hi2c->Instance != I2C1) return;
-
-	tx_byte++;
-	if (tx_byte < MSG_LEN)
-	{
-		if (HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &tx_buf[tx_byte], 1U,
-		                                  slave_tx_frame(tx_byte)) != HAL_OK)
-		{
-			error_inc();
-			listening = false;
-		}
-	}
+	/* Nothing to do here; ListenCpltCallback closes the round. */
 }
 
 void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	if (hi2c->Instance != I2C1) return;
 
-	/* A STOP (or the read's terminating NACK) ended the transaction; if it
-	 * closed the read phase the reply is fully out, so the round is done. */
-	if (phase == PHASE_TRANSMIT && tx_byte >= MSG_LEN)
+	/* Round is only done once the transmit phase's STOP/NACK lands. */
+	if (phase == PHASE_TRANSMIT)
 	{
 		round_complete();
 	}
@@ -227,33 +199,54 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 {
 	if (hi2c->Instance != I2C1) return;
 
-	/* The normal NACK is handled via LAST_FRAME -> ListenCplt, so anything
-	 * here is a real bus error. Drop listen; the task re-arms it. */
+	/* The expected NACK is handled via ListenCplt; anything here is a real
+	 * error. Drop listen - the task re-arms it. */
 	error_inc();
 	listening = false;
 }
 
+void DemoTask_Init(void)
+{
+	RingBufInit(&tx_ring, tx_ring_mem, L1_RING_SIZE);
+	RingBufInit(&rx_ring, rx_ring_mem, L1_RING_SIZE);
+
+	/* Test payload, ready to answer the master's first read. */
+	static const uint8_t seed[] = { 'A', 'B', 'C', 'D' };
+	RingBufWrite(&tx_ring, (uint8_t *)seed, sizeof(seed));
+}
+
 void MyDemoTask(void)
 {
+	/* Expected master payload, just for the PASS/FAIL log below. */
+	static const uint8_t expected_from_master[] = { 'a', 'b', 'c', 'd' };
+	static uint8_t        verify_index = 0U;
+
 	if (!listening)
 	{
 		start_listen();
 	}
 
-	if (log_tail != log_head)
+	if (round_ready)
 	{
-		const log_entry_t *e = &log_ring[log_tail];
-		char line[80];
-		uint8_t rx_safe[MSG_LEN];
-		uint8_t tx_safe[MSG_LEN];
-		memcpy(rx_safe, e->rx, MSG_LEN); rx_safe[MSG_LEN - 1U] = '\0';
-		memcpy(tx_safe, e->tx, MSG_LEN); tx_safe[MSG_LEN - 1U] = '\0';
-		snprintf(line, sizeof(line),
-		         "[Slave]  rx='%s' tx='%s'\n",
-		         (const char *)rx_safe, (const char *)tx_safe);
-		usb_print(line);
+		round_ready = false;
+
+		if (verify_index < sizeof(expected_from_master))
+		{
+			bool pass = (rx_byte_val == expected_from_master[verify_index]);
+			char line[64];
+			snprintf(line, sizeof(line), "[Slave]  rx='%c' tx='%c' %s\n",
+			         (char)rx_byte_val, (char)tx_byte_val, pass ? "PASS" : "FAIL");
+			usb_print(line);
+			verify_index++;
+			if (verify_index == sizeof(expected_from_master))
+			{
+				usb_print("[Slave]  ring buffer pass-through test complete\n");
+			}
+		}
 		led_activity();
-		log_tail = (uint8_t)((log_tail + 1U) & (LOG_SLOTS - 1U));
+		led_heartbeat();
+		led_fault_off();
+		error_reset();
 	}
 
 	if (error_count >= MAX_CONSEC_ERRORS)
