@@ -1,5 +1,22 @@
 # Changelog
 
+## i2c-parsecs-lowlevel
+
+- Migrated the PARSECS Low Level Substack (Layer 1, 2 and 3 plus LowLevelTask /
+  LowLevelAPI / Data / crc16) into a shared `PARSECS/` tree used by both STM32
+  projects. Master/slave stay identical except `-DSPI_MASTER`, Layer 1 HAL role,
+  LowLevelTask slave walk, and `PARSECS_Add_Slave`.
+- Layer 1 is the existing I2C DMA byte pump, now operating on each `SLAVE`'s
+  `l1_buffer_tx` / `l1_buffer_rx` with IRQ-safe ring access. Chip-select
+  callbacks are no-ops (I2C address `0x08` replaces SPI SSEL).
+- Layer 2/3 come from the STM32 slave SPI sources (`PARSECS_CMD` instead of
+  `CMD`, `RAW_RING_BUFFER_SIZE` 16). High Level (Protocol / BER) is not ported.
+- `main` calls `PARSECS_LowLevelTaskInit` then `DemoTask_Init`; `myTestTask`
+  runs `PARSECS_LowLevelTask` then `MyDemoTask` each tick.
+- Demo queues `PING` (master) / `PONG` (slave) via `PARSECS_TRANSMIT_APP` and
+  prints `PARSECS_RECEIVE_APP` over USB CDC. The old `abcd`/`ABCD` L1 seed test
+  is gone.
+
 ## feature/i2c-layer1-ringbuffer-dma
 
 - Ported the `PARSECS_LAYER1` ring-buffer byte pump (see

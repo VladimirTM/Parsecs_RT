@@ -1,7 +1,3 @@
-//
-// Created by valy on 14.04.2025.
-//
-
 #ifndef FREERTOS_HELPERS_H
 #define FREERTOS_HELPERS_H
 #include <FreeRTOSConfig.h>

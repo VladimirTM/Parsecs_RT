@@ -53,14 +53,17 @@ include_directories(
  ${CMAKE_SOURCE_DIR}/Application
  ${CMAKE_SOURCE_DIR}/AppInc
  ${CMAKE_SOURCE_DIR}/../ringbuffer
+ ${CMAKE_SOURCE_DIR}/../PARSECS
  ${includes})
 
-add_definitions(${defines})
+add_definitions(${defines} -DSPI_MASTER)
 file(GLOB_RECURSE SOURCES
     ${CMAKE_SOURCE_DIR}/Application/*.*
     ${sources}
 )
 list(APPEND SOURCES ${CMAKE_SOURCE_DIR}/../ringbuffer/ringbuf.c)
+file(GLOB PARSECS_SOURCES ${CMAKE_SOURCE_DIR}/../PARSECS/*.c)
+list(APPEND SOURCES ${PARSECS_SOURCES})
 
 set(LINKER_SCRIPT $${CMAKE_SOURCE_DIR}/${linkerScript})
 

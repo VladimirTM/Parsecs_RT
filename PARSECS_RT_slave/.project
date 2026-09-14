@@ -35,5 +35,10 @@
 			<type>2</type>
 			<locationURI>PARENT-1-PROJECT_LOC/ringbuffer</locationURI>
 		</link>
+		<link>
+			<name>PARSECS</name>
+			<type>2</type>
+			<locationURI>PARENT-1-PROJECT_LOC/PARSECS</locationURI>
+		</link>
 	</linkedResources>
 </projectDescription>

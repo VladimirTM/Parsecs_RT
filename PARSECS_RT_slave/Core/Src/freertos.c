@@ -27,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 #include <demo_task.h>
 #include <FreeRTOS_Helpers.h>
+#include "PARSECS_LowLevelTask.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -176,9 +177,10 @@ void StartDefaultTask(void *argument)
 void myTestTaskStart(void *argument)
 {
   /* USER CODE BEGIN myTestTaskStart */
-  /* MyDemoTask is non-blocking; osDelay(1) yields a tick so USB CDC can run. */
+  /* LowLevelTask pumps L3/L2/L1; MyDemoTask queues/prints APP payloads. */
   for(;;)
   {
+    PARSECS_LowLevelTask();
     MyDemoTask();
     osDelay(1);
   }
