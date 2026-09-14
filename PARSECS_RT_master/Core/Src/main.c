@@ -27,6 +27,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "demo_task.h"
+#include "PARSECS_LowLevelTask.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -94,6 +95,7 @@ int main(void)
   MX_DMA_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  PARSECS_LowLevelTaskInit();
   DemoTask_Init();
   /* USER CODE END 2 */
 

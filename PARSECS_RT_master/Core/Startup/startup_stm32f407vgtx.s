@@ -1,7 +1,6 @@
 /**
   ******************************************************************************
   * @file      startup_stm32f407xx.s
-  * @author    MCD Application Team
   * @brief     STM32F407xx Devices vector table for GCC based toolchains. 
   *            This module performs:
   *                - Set the initial SP
