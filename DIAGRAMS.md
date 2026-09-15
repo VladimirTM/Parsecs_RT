@@ -24,12 +24,15 @@ Each byte is a complete standalone `I2C_FIRST_AND_LAST_FRAME` DMA transfer
 those bytes into `SPI_BASE_FRAME`. The write phase pushes into the slave's
 `l1_buffer_rx`; the read phase pops the slave's `l1_buffer_tx` back into the
 master's `l1_buffer_rx`. The transfer runs under the I2C1/DMA1 interrupts
-while `PARSECS_LowLevelTask` / `MyDemoTask` run each 1 ms tick.
+while `PARSECS_LowLevelTask` / `PARSECS_Protocol_Interface_Task` / `MyDemoTask`
+run each 1 ms tick.
 
 ## Boot
 
     main():  HAL_Init -> SystemClock (168 MHz) -> MX_GPIO_Init -> MX_DMA_Init
-          -> MX_I2C1_Init -> PARSECS_LowLevelTaskInit -> DemoTask_Init
+          -> MX_I2C1_Init -> PARSECS_LowLevelTaskInit
+          -> PARSECS_Protocol_Interface_Task_Init -> DemoTask_Init
           -> osKernelInitialize -> MX_FREERTOS_Init -> osKernelStart
     tasks:   defaultTask (USB init, then osDelay 1)
-             myTestTask  (PARSECS_LowLevelTask, MyDemoTask, then osDelay 1)
+             myTestTask  (PARSECS_LowLevelTask, PARSECS_Protocol_Interface_Task,
+                          MyDemoTask, then osDelay 1)

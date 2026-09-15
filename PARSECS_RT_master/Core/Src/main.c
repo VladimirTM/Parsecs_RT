@@ -28,6 +28,7 @@
 /* USER CODE BEGIN Includes */
 #include "demo_task.h"
 #include "PARSECS_LowLevelTask.h"
+#include "PARSECS_Protocol_Interface.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -96,6 +97,7 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   PARSECS_LowLevelTaskInit();
+  PARSECS_Protocol_Interface_Task_Init();
   DemoTask_Init();
   /* USER CODE END 2 */
 
