@@ -28,6 +28,7 @@
 #include <demo_task.h>
 #include <FreeRTOS_Helpers.h>
 #include "PARSECS_LowLevelTask.h"
+#include "PARSECS_HighLevelTask.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -177,10 +178,11 @@ void StartDefaultTask(void *argument)
 void myTestTaskStart(void *argument)
 {
   /* USER CODE BEGIN myTestTaskStart */
-  /* LowLevelTask pumps L3/L2/L1; MyDemoTask queues/prints APP payloads. */
+  /* LowLevelTask pumps L3/L2/L1; High Level job then USER_Send/Receive demo. */
   for(;;)
   {
     PARSECS_LowLevelTask();
+    PARSECS_Protocol_Interface_Task();
     MyDemoTask();
     osDelay(1);
   }

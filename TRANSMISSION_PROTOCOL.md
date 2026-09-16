@@ -1,10 +1,12 @@
 # I2C transmission protocol
 
-How the two boards exchange data with the PARSECS Low Level Substack (L1–L3)
-on I2C DMA. Layer 1 lives in `PARSECS/PARSECS_Layer1.c`. Layer 2/3 and the
-Low Level API are the SPI-stack sources in `PARSECS/`. Application code is
-`PARSECS_RT_master/Application/demo_task.c` and the slave equivalent (the
-files are the same; `-DSPI_MASTER` picks the payload and `PARSECS_Add_Slave`).
+How the two boards exchange data with the PARSECS stack on I2C DMA. Layer 1
+lives in `PARSECS/PARSECS_Layer1.c`. Layer 2/3 and the Low Level API are the
+SPI-stack sources in `PARSECS/`. Layer 4 (WIT PDU) and Layer 7 (APP Get/Set/Call)
+live in `PARSECS_Protocol.c`. Layer 6 (BER) lives in the `berlib/` submodule
+(`src/berc`). Application code is `PARSECS_RT_master/Application/demo_task.c`
+and the slave equivalent (the files are the same; `-DSPI_MASTER` picks
+GetRequest vs GetResponse).
 
 See [DIAGRAMS.md](DIAGRAMS.md) for the wiring pinout and L1 byte-round diagram,
 and [README.md](README.md) for the project overview.
@@ -18,11 +20,13 @@ Each 1 ms tick of `myTestTask`:
     PARSECS_LAYER1          # one I2C byte each way, if the bus is idle
     PARSECS_RECEIVE_LAYER2
     PARSECS_RECEIVE_LAYER3
-    MyDemoTask              # TRANSMIT_APP / RECEIVE_APP
+    PARSECS_Protocol_Interface_Task   # L4/L6/L7; calls RECEIVE_APP / TRANSMIT_APP
+    MyDemoTask                        # USER_Send / USER_Receive only
 
 I2C is half-duplex, so the RX byte from this L1 call may only be in the ring
 on the next tick. Layer 2 is a byte state machine, so that one-job delay is
-fine as long as order is preserved.
+fine as long as order is preserved. High Level must run after L3 so a completed
+DATA frame is visible to `PARSECS_RECEIVE_APP` in the same tick.
 
 ## Layer 1 wire format
 
@@ -54,8 +58,8 @@ Bytes Layer 1 moves are assembled by Layer 2:
 | TYPE CMD | `0x9B` `PARSECS_CMD` |
 | CRC | incremental CRC16 (`crc16.c`), same as the SPI stack |
 
-ACK/NACK frames have `LEN = 0` (no DATA bytes). DATA frames carry the buffer
-passed to `PARSECS_TRANSMIT_APP`.
+ACK/NACK frames have `LEN = 0` (no DATA bytes). DATA frames carry a WIT PDU
+segment queued by High Level through `PARSECS_TRANSMIT_APP`.
 
 ## Layer 3
 
@@ -63,7 +67,29 @@ passed to `PARSECS_TRANSMIT_APP`.
   (`FG_LL_FTT`) unless an ACK is pending (ACK wins).
 - L3 RX: a good DATA frame sets `FG_ACK` and `FG_HL_NDF_*`; ACK/NACK update the
   last ACKed/NACKed sequence numbers. `PARSECS_RECEIVE_APP` returns the DATA
-  payload.
+  payload. The High Level job is the only caller; the demo must not steal it.
+
+## Layer 4 / 6 / 7
+
+High Level sits on L3 DATA payloads:
+
+- L4 splits/assembles a WIT FRAME (`PARSECS_WIT_FRAME_LENGTH` 1024) into WIT
+  PDUs that fit in an L3 DATA field.
+- L6 BER encodes the APP header (source, destination, operation, control,
+  TypeID) plus the user OperationData.
+- L7 APP operations are Get/Set/Call request and response.
+
+`USER_Send` / `USER_Receive` take a board address that names the local High
+Level descriptor, not an I2C address:
+
+| Node | `USER_*` board address | APP source → destination |
+|---|---|---|
+| Master | `CORE_TX_WIT_COMM_BOARD` (6) | motherboard (0) → comm (6) |
+| Slave | `CORE_TX_WIT_MOTHERBOARD` (0) | comm (6) → motherboard (0) |
+
+Both descriptors live at `CORE_TX_Wit_Boards[0]` (`MAX_BOARD_COUNT` is 1).
+Lookup is by the `boardAddress` field so the WIT enum is not used as an array
+index.
 
 ## DMA
 
@@ -77,16 +103,28 @@ push/pop goes through `PARSECS_Port.h` (`__disable_irq` / restore).
 
 ## Test payload
 
-`DemoTask_Init()` on the master calls `PARSECS_Add_Slave` with no-op
-select/deselect (I2C addressing replaces chip-select). Both sides then queue
-one Low Level payload when the stack is ready:
+`PARSECS_Protocol_Interface_Task_Init()` on the master calls `PARSECS_Add_Slave`
+with no-op select/deselect (I2C addressing replaces chip-select). The demo
+then performs one High Level exchange, retrying `USER_Send` on
+`PARSECS_PROTOCOL_ERROR_BUSY`:
 
-- Master: `PING` (4 bytes)
-- Slave: `PONG` (4 bytes)
+- Master: `GetRequest`, TypeID `0x01`, BER Null, OperationControl `0xFF`
+- Slave: `GetResponse`, TypeID `0x01`, BER integer `42`,
+  OperationControl `PARSECS_APP_Success`
 
-Each side prints a USB CDC line when `PARSECS_RECEIVE_APP` returns the peer's
-DATA frame (after L2 CRC and L3 ACK). Dummy `0x00` L1 bytes keep the link
-pumping when a TX ring is empty, matching PARSECS Layer 1 idle behaviour.
+Expected USB CDC:
+
+```
+[Master] queued GetRequest TypeID=0x01
+[Slave]  rx GetRequest TypeID=0x01
+[Slave]  queued GetResponse TypeID=0x01 value=42
+[Master] rx GetResponse TypeID=0x01 value=42
+```
+
+Saleae still shows L2 `7E … 8C` DATA (WIT PDU + BER, not ASCII PING) then L3
+ACK `7E 00 xx 7C …`. Leading/trailing `00` bytes are L1 dummy. Dummy `0x00` L1
+bytes keep the link pumping when a TX ring is empty, matching PARSECS Layer 1
+idle behaviour.
 
 ## Error handling
 
@@ -108,3 +146,7 @@ pumping when a TX ring is empty, matching PARSECS Layer 1 idle behaviour.
 | `TRANSACTION_TIMEOUT_TICKS` | 50 | master L1 watchdog |
 | `MAX_CONSEC_ERRORS` | 10 | errors before a resync |
 | `SPI_DATA_LENGTH` | 254 | max L2 DATA payload |
+| `MAX_BOARD_COUNT` | 1 | one High Level peer on I2C |
+| `PARSECS_WIT_FRAME_LENGTH` | 1024 | L4 assembled WIT FRAME |
+| Demo TypeID | `0x01` | GetRequest / GetResponse |
+| Demo value | `42` | BER integer in GetResponse |
