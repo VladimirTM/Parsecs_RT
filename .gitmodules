@@ -1,3 +1,6 @@
 [submodule "ringbuffer"]
 	path = ringbuffer
 	url = https://gitlab.upt.ro/dsplabs/ecomap/ringbuffer.git
+[submodule "berlib"]
+	path = berlib
+	url = https://gitlab.upt.ro/DSPLabs-public/berlib.git

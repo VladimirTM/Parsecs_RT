@@ -75,19 +75,21 @@
 
 /*!
  * \def SLAVE_COUNT
- * Defines the number of maximum slaves supported. In case of a slave node this value should be 1
+ * Defines the number of maximum Low Level slaves supported. Master keeps the
+ * original table size; this I2C port only calls PARSECS_Add_Slave once.
  */
 /*!
  * \def MAX_BOARD_COUNT
- * Similar as \ref SLAVE_COUNT but it refers to the number of boards. It should have the same value as \ref SLAVE_COUNT
+ * High Level board table size. I2C has one peer, so this is 1 on both nodes.
+ * USER_Send / USER_Receive look up the descriptor by APP board address, they
+ * do not use the WIT enum as an array index (CORE_TX_WIT_COMM_BOARD is 6).
  */
 #ifdef SPI_MASTER
 #define SLAVE_COUNT 				8
-#define MAX_BOARD_COUNT				8
 #else
 #define SLAVE_COUNT					1
-#define MAX_BOARD_COUNT				1
 #endif
+#define MAX_BOARD_COUNT				1
 
 /*!
  * \def SPI_DATA_LENGTH

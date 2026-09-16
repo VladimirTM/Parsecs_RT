@@ -1,5 +1,26 @@
 # Changelog
 
+## i2c-parsecs-highlevel
+
+- Ported the PARSECS High Level Substack (Layer 4 WIT PDU, Layer 6 BER, Layer 7
+  APP Get/Set/Call) into the shared `PARSECS/` tree: `PARSECS_Protocol`,
+  `PARSECS_Protocol_Interface`, and `PARSECS_HighLevelTask`. Layer 6 uses the
+  `berlib/` git submodule (`src/berc`, same URL as `coretx_commboard`) instead of
+  a copied `ber.c`. Raspberry Pi GPIO chip-select (`PARSECS_WIT_BOARDS`) is not
+  used; I2C still addresses slave `0x08`.
+- One I2C peer: `MAX_BOARD_COUNT` is 1 on both nodes. The master descriptor is
+  `CORE_TX_WIT_COMM_BOARD` and the slave descriptor is `CORE_TX_WIT_MOTHERBOARD`,
+  stored at `CORE_TX_Wit_Boards[0]`. `USER_Send` / `USER_Receive` look up that
+  slot by APP address instead of using the WIT enum as an array index
+  (`CORE_TX_WIT_COMM_BOARD` is 6).
+- `PARSECS_Protocol_Interface_Task_Init` calls `PARSECS_Add_Slave` (noop CS) on
+  the master. `myTestTask` runs `PARSECS_LowLevelTask`, then
+  `PARSECS_Protocol_Interface_Task`, then `MyDemoTask`.
+- Demo: master sends `GetRequest` TypeID `0x01` with BER Null; slave answers
+  `GetResponse` with BER integer `42`. USB CDC prints the exchange. The demo
+  does not call `PARSECS_TRANSMIT_APP` / `PARSECS_RECEIVE_APP` (High Level owns
+  L3). PING/PONG is gone.
+
 ## i2c-parsecs-lowlevel
 
 - Migrated the PARSECS Low Level Substack (Layer 1, 2 and 3 plus LowLevelTask /
