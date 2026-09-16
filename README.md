@@ -11,8 +11,8 @@ APP Get/Set/Call path (`PARSECS_Protocol_USER_Send` /
 exchange (TypeID `0x01`, BER integer `42`).
 
 Built with STM32CubeIDE / CubeMX. Two separate projects live under
-`PARSECS_RT_master/` and `PARSECS_RT_slave/`. They share `PARSECS/` and
-`ringbuffer/`; the master is built with `-DSPI_MASTER`.
+`PARSECS_RT_master/` and `PARSECS_RT_slave/`. They share `PARSECS/`,
+`ringbuffer/`, and `berlib/`; the master is built with `-DSPI_MASTER`.
 
 ---
 
@@ -53,8 +53,9 @@ LED feedback (GPIOD, same mapping on both boards):
 ## Project layout
 
 ```
-PARSECS/              Shared stack (L1 I2C DMA, L2, L3, L4 WIT, L6 BER, L7 APP)
+PARSECS/              Shared stack (L1 I2C DMA, L2, L3, L4 WIT, L7 APP)
 ringbuffer/           Ring buffer library (git submodule, shared by both projects)
+berlib/               BER C library (git submodule, `src/berc`, shared by both projects)
 PARSECS_RT_master/    STM32CubeIDE project — I2C master (-DSPI_MASTER)
 PARSECS_RT_slave/     STM32CubeIDE project — I2C slave
   Application/
@@ -74,7 +75,7 @@ Each doc above owns a single topic — if you're updating the protocol or wiring
 
 Open `PARSECS_RT_master/` and `PARSECS_RT_slave/` as separate projects in STM32CubeIDE and build each for the `Debug` configuration. Flash one board with the master firmware and the other with the slave.
 
-> **Note:** the `.ioc` files fully own the I2C1/DMA/NVIC configuration (DMA requests, `I2C1_EV`/`I2C1_ER`/`DMA1_Stream0`/`DMA1_Stream6` interrupts, and — on the slave — the `OwnAddress1` value), and every line CubeMX would auto-generate has been moved out of the `USER CODE` markers in `i2c.c`/`stm32f4xx_it.c` to match. Regenerating code from the `.ioc` (e.g. after tweaking an I2C setting) is safe: only the application logic inside `USER CODE` sections and `Application/demo_task.c` needs to survive, and that's exactly what's preserved. The `ringbuffer/` and `PARSECS/` include paths (linked resources + `../../ringbuffer` / `../../PARSECS`) live in the IDE project settings and aren't touched by code generation, but it's worth a quick glance after a regen regardless. The master must keep `-DSPI_MASTER`.
+> **Note:** the `.ioc` files fully own the I2C1/DMA/NVIC configuration (DMA requests, `I2C1_EV`/`I2C1_ER`/`DMA1_Stream0`/`DMA1_Stream6` interrupts, and — on the slave — the `OwnAddress1` value), and every line CubeMX would auto-generate has been moved out of the `USER CODE` markers in `i2c.c`/`stm32f4xx_it.c` to match. Regenerating code from the `.ioc` (e.g. after tweaking an I2C setting) is safe: only the application logic inside `USER CODE` sections and `Application/demo_task.c` needs to survive, and that's exactly what's preserved. The `ringbuffer/`, `berlib/` (`src/berc`), and `PARSECS/` include paths (linked resources + `../../ringbuffer` / `../../berlib/src/berc` / `../../PARSECS`) live in the IDE project settings and aren't touched by code generation, but it's worth a quick glance after a regen regardless. The master must keep `-DSPI_MASTER`.
 
 ---
 

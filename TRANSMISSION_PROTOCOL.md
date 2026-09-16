@@ -2,10 +2,11 @@
 
 How the two boards exchange data with the PARSECS stack on I2C DMA. Layer 1
 lives in `PARSECS/PARSECS_Layer1.c`. Layer 2/3 and the Low Level API are the
-SPI-stack sources in `PARSECS/`. Layer 4 (WIT PDU), Layer 6 (BER) and Layer 7
-(APP Get/Set/Call) live in `PARSECS_Protocol.c` plus `ber.c`. Application code
-is `PARSECS_RT_master/Application/demo_task.c` and the slave equivalent (the
-files are the same; `-DSPI_MASTER` picks GetRequest vs GetResponse).
+SPI-stack sources in `PARSECS/`. Layer 4 (WIT PDU) and Layer 7 (APP Get/Set/Call)
+live in `PARSECS_Protocol.c`. Layer 6 (BER) lives in the `berlib/` submodule
+(`src/berc`). Application code is `PARSECS_RT_master/Application/demo_task.c`
+and the slave equivalent (the files are the same; `-DSPI_MASTER` picks
+GetRequest vs GetResponse).
 
 See [DIAGRAMS.md](DIAGRAMS.md) for the wiring pinout and L1 byte-round diagram,
 and [README.md](README.md) for the project overview.

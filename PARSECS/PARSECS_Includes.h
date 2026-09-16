@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <ringbuf.h>
 #include "crc16.h"
-#include "ber.h"
+#include <ber.h>
 #include "led.h"
 #include "log.h"
 

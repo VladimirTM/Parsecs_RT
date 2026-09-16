@@ -4,9 +4,10 @@
 
 - Ported the PARSECS High Level Substack (Layer 4 WIT PDU, Layer 6 BER, Layer 7
   APP Get/Set/Call) into the shared `PARSECS/` tree: `PARSECS_Protocol`,
-  `PARSECS_Protocol_Interface`, `PARSECS_HighLevelTask`, and `ber.c`. Raspberry
-  Pi GPIO chip-select (`PARSECS_WIT_BOARDS`) is not used; I2C still addresses
-  slave `0x08`.
+  `PARSECS_Protocol_Interface`, and `PARSECS_HighLevelTask`. Layer 6 uses the
+  `berlib/` git submodule (`src/berc`, same URL as `coretx_commboard`) instead of
+  a copied `ber.c`. Raspberry Pi GPIO chip-select (`PARSECS_WIT_BOARDS`) is not
+  used; I2C still addresses slave `0x08`.
 - One I2C peer: `MAX_BOARD_COUNT` is 1 on both nodes. The master descriptor is
   `CORE_TX_WIT_COMM_BOARD` and the slave descriptor is `CORE_TX_WIT_MOTHERBOARD`,
   stored at `CORE_TX_Wit_Boards[0]`. `USER_Send` / `USER_Receive` look up that

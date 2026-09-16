@@ -14,7 +14,7 @@
 #include "main.h"
 #include "usbd_cdc_if.h"
 #include "PARSECS_Protocol_Interface.h"
-#include "ber.h"
+#include <ber.h>
 
 #define LED_HEARTBEAT_Pin   LD4_Pin
 #define LED_WARNING_Pin     LD3_Pin
