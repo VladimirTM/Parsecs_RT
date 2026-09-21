@@ -5,8 +5,8 @@ lives in `PARSECS/PARSECS_Layer1.c`. Layer 2/3 and the Low Level API are the
 SPI-stack sources in `PARSECS/`. Layer 4 (WIT PDU) and Layer 7 (APP Get/Set/Call)
 live in `PARSECS_Protocol.c`. Layer 6 (BER) lives in the `berlib/` submodule
 (`src/berc`). Application code is `PARSECS_RT_master/Application/demo_task.c`
-and the slave equivalent (the files are the same; `-DSPI_MASTER` picks
-GetRequest vs GetResponse).
+and the slave equivalent (the files are the same; `-DSPI_MASTER` picks the
+motherboard sequencer vs the comm-board object).
 
 See [DIAGRAMS.md](DIAGRAMS.md) for the wiring pinout and L1 byte-round diagram,
 and [README.md](README.md) for the project overview.
@@ -105,26 +105,122 @@ push/pop goes through `PARSECS_Port.h` (`__disable_irq` / restore).
 
 `PARSECS_Protocol_Interface_Task_Init()` on the master calls `PARSECS_Add_Slave`
 with no-op select/deselect (I2C addressing replaces chip-select). The demo
-then performs one High Level exchange, retrying `USER_Send` on
-`PARSECS_PROTOCOL_ERROR_BUSY`:
+then runs 12 High Level round-trips, retrying `USER_Send` on
+`PARSECS_PROTOCOL_ERROR_BUSY`. The master is the motherboard bringing a comm
+board into service; the slave holds live state (`FirmwareVersion`, `TxPower`,
+`LinkReady`).
 
-- Master: `GetRequest`, TypeID `0x01`, BER Null, OperationControl `0xFF`
-- Slave: `GetResponse`, TypeID `0x01`, BER integer `42`,
-  OperationControl `PARSECS_APP_Success`
+Request `OperationControl` is `0xFF` (encoded as BER Null). After L7 decode,
+Null becomes `0` (`PARSECS_APP_Success`) — the slave does not require received
+control `0xFF`. Error replies still carry valid BER OperationData (Null).
+`BERIntegerEncode` is `int8_t`, so demo values stay in `-128…127`.
 
-Expected USB CDC:
+Demo TypeIDs (application catalog, not part of the stack):
+
+| TypeID | Name | Get | Set | Call |
+|---|---|---|---|---|
+| `0x01` | FirmwareVersion | integer, default `1` | WriteDenied | OperationUnsupported |
+| `0x02` | TxPower | integer, default `10` | `1…20`; else ParameterSyntaxError | OperationUnsupported |
+| `0x03` | LinkReady | `0/1`, Call-owned | WriteDenied | OperationUnsupported |
+| `0x20` | StartLink | ReadDenied | WriteDenied | Null → LinkReady=1 |
+| `0x21` | StopLink | ReadDenied | WriteDenied | Null → LinkReady=0 |
+| `0x22` | Ping | ReadDenied | WriteDenied | integer nonce echoed |
+| `0x7F` | Unknown | ParameterMethodUndefined | ParameterMethodUndefined | ParameterMethodUndefined |
+
+Sequence:
+
+1. Get FirmwareVersion → `1` Success
+2. Get TxPower → `10` Success
+3. Set TxPower `15` → Success
+4. Get TxPower → `15` Success
+5. Set FirmwareVersion `99` → WriteDenied
+6. Set TxPower `99` → ParameterSyntaxError
+7. Get Unknown `0x7F` → ParameterMethodUndefined
+8. Call StartLink → Success
+9. Get LinkReady → `1` Success
+10. Call Ping `42` → `42` Success
+11. Call StopLink → Success
+12. Get LinkReady → `0` Success
+
+Expected USB CDC (abbreviated):
 
 ```
-[Master] queued GetRequest TypeID=0x01
-[Slave]  rx GetRequest TypeID=0x01
-[Slave]  queued GetResponse TypeID=0x01 value=42
-[Master] rx GetResponse TypeID=0x01 value=42
+[Master] queued GetRequest FirmwareVersion
+[Slave]  rx GetRequest FirmwareVersion
+[Slave]  queued GetResponse FirmwareVersion=1 Success
+[Master] PASS GetResponse FirmwareVersion=1
+...
+[Master] queued CallRequest Ping=42
+[Slave]  queued CallResponse Ping=42 Success
+[Master] PASS CallResponse Ping=42
+...
+[Master] DEMO RESULT 12/12 PASS
 ```
 
-Saleae still shows L2 `7E … 8C` DATA (WIT PDU + BER, not ASCII PING) then L3
-ACK `7E 00 xx 7C …`. Leading/trailing `00` bytes are L1 dummy. Dummy `0x00` L1
-bytes keep the link pumping when a TX ring is empty, matching PARSECS Layer 1
-idle behaviour.
+Green `LD4` toggles on each PASS / answered request. Red `LD5` is solid if the
+master sequencer fails.
+
+## Saleae validation
+
+Saleae does not show Get/Set/Call as I2C messages. Layer 1 is a one-byte pump
+(`I2C_FIRST_AND_LAST_FRAME` to address `0x08` at 400 kHz). Each round is a
+1-byte write (M→S) then a 1-byte read (S→M), with `0x00` dummy when a TX ring
+is empty. APP transactions appear only after you reassemble L2 frames from
+those bytes. See [DIAGRAMS.md](DIAGRAMS.md) for a one-exchange view.
+
+Capture setup:
+
+- Probes: SCL = PB6, SDA = PB7, GND common with both boards
+- Sample rate: 8 MHz or higher (I2C is 400 kHz)
+- Analyzer: I2C, 7-bit address `0x08` (Saleae may also show 8-bit `0x10` write
+  / `0x11` read)
+- Window: start capture, reset both boards, record about 5–10 s
+
+Logic 2 will list hundreds of 1-byte transactions. Export I2C decoded bytes
+and split by direction: write data = master → slave, read data = slave →
+master. Ignore runs of dummy `0x00`. Search each direction for SOF `0x7E`.
+
+Frame on the wire:
+
+    7E | LEN | SEQ | TYPE | DATA[LEN] | CRC16_hi | CRC16_lo
+
+CRC covers LEN+SEQ+TYPE+DATA only (not SOF). Types: DATA `0x8C`, ACK `0x7C`,
+NACK `0x7B`. ACK/NACK have `LEN = 0`.
+
+Each High Level `USER_Send` that fits in one WIT PDU becomes one DATA frame,
+then the peer sends one ACK with the same SEQ. Demo payloads are small, so
+there is no multi-PDU (WIT starts `00 01 01 <len> …`). Inside DATA:
+
+    WIT: flags=0  total=1  current=1  pdulen  |  BER APP (src, dst, op, control, TypeID, OperationData)
+
+L7 markers after the 4-byte WIT header:
+
+- Addresses: request `src=0 dst=6`, response `src=6 dst=0`
+- OperationType: GetReq `1`, GetResp `2`, SetReq `3`, SetResp `4`, CallReq `5`,
+  CallResp `6`
+- TypeID as in the catalog above
+- Request control is BER Null; response control is Success `0`, WriteDenied
+  `4`, ParameterMethodUndefined `5`, ParameterSyntaxError `7`
+
+Do not expect ASCII `PING` / `GetRequest` on SDA.
+
+Checklist for the 12-step demo: 24 DATA + 24 ACK and zero NACK (`0x7B`).
+Each request is M→S DATA then S→M ACK (same SEQ); each response is S→M DATA
+then M→S ACK. SEQ on DATA increments per direction; ACK SEQ equals the DATA
+it acknowledges.
+
+Pass criteria:
+
+- No `7E 00 xx 7B` NACK frames
+- Every DATA followed by ACK on the opposite direction before the next DATA
+  from that sender (High Level is one-in-flight)
+- 12 M→S DATA and 12 S→M DATA
+- CDC `DEMO RESULT 12/12 PASS` lines up with that count
+
+USB CDC is the L7 oracle; Saleae is the L1/L2 oracle. If CDC PASSes but
+Saleae shows NACK or a missing ACK, the stack dropped or retried below APP.
+Dummy `0x00` L1 bytes keep the link pumping when a TX ring is empty, matching
+PARSECS Layer 1 idle behaviour.
 
 ## Error handling
 
@@ -148,5 +244,5 @@ idle behaviour.
 | `SPI_DATA_LENGTH` | 254 | max L2 DATA payload |
 | `MAX_BOARD_COUNT` | 1 | one High Level peer on I2C |
 | `PARSECS_WIT_FRAME_LENGTH` | 1024 | L4 assembled WIT FRAME |
-| Demo TypeID | `0x01` | GetRequest / GetResponse |
-| Demo value | `42` | BER integer in GetResponse |
+| Demo TypeIDs | `0x01`–`0x03`, `0x20`–`0x22`, `0x7F` | Get/Set/Call catalog in Test payload |
+| Demo Ping nonce | `42` | BER integer in Call Ping |

@@ -7,8 +7,9 @@ Two STM32F407G-DISC1 boards communicating over I2C using FreeRTOS. The shared
 node-specific piece: it keeps the I2C DMA byte pump. Layers 2–3 frame
 `SPI_BASE_FRAME` and ACK/NACK. Layers 4, 6 and 7 are the WIT PDU, BER, and
 APP Get/Set/Call path (`PARSECS_Protocol_USER_Send` /
-`PARSECS_Protocol_USER_Receive`). The demo is one GetRequest / GetResponse
-exchange (TypeID `0x01`, BER integer `42`).
+`PARSECS_Protocol_USER_Receive`). The demo is a 12-step motherboard → comm
+board sequence: Get/Set/Call plus a few error replies (FirmwareVersion,
+TxPower, StartLink / Ping / StopLink).
 
 Built with STM32CubeIDE / CubeMX. Two separate projects live under
 `PARSECS_RT_master/` and `PARSECS_RT_slave/`. They share `PARSECS/`,
@@ -43,10 +44,10 @@ LED feedback (GPIOD, same mapping on both boards):
 
 | LED | Color | Meaning |
 |-----|-------|---------|
-| LD4 | Green | Heartbeat — L1 round complete, or APP Get seen/answered |
+| LD4 | Green | Heartbeat — APP step PASS (master) or request answered (slave) |
 | LD6 | Blue | Activity — byte on the wire |
 | LD3 | Orange | Warning — USB busy or a ring buffer was full (byte dropped) |
-| LD5 | Red | Fault — solid during re-sync |
+| LD5 | Red | Fault — solid during re-sync, or demo FAIL |
 
 ---
 
@@ -59,7 +60,7 @@ berlib/               BER C library (git submodule, `src/berc`, shared by both p
 PARSECS_RT_master/    STM32CubeIDE project — I2C master (-DSPI_MASTER)
 PARSECS_RT_slave/     STM32CubeIDE project — I2C slave
   Application/
-    demo_task.c/h     USER_Send / USER_Receive GetRequest demo
+    demo_task.c/h     USER_Send / USER_Receive Get/Set/Call commissioning demo
   Core/               HAL-generated startup, GPIO, DMA, I2C, IRQ handlers
   Middlewares/        FreeRTOS, USB CDC
 CHANGELOG.md          Per-branch change notes

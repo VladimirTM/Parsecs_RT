@@ -16,10 +16,12 @@
 - `PARSECS_Protocol_Interface_Task_Init` calls `PARSECS_Add_Slave` (noop CS) on
   the master. `myTestTask` runs `PARSECS_LowLevelTask`, then
   `PARSECS_Protocol_Interface_Task`, then `MyDemoTask`.
-- Demo: master sends `GetRequest` TypeID `0x01` with BER Null; slave answers
-  `GetResponse` with BER integer `42`. USB CDC prints the exchange. The demo
-  does not call `PARSECS_TRANSMIT_APP` / `PARSECS_RECEIVE_APP` (High Level owns
-  L3). PING/PONG is gone.
+- Demo: 12-step High Level sequence. The master (motherboard) Gets
+  FirmwareVersion and TxPower, Sets TxPower and reads it back, then Calls
+  StartLink / Ping / StopLink. Error replies cover WriteDenied,
+  ParameterSyntaxError, and ParameterMethodUndefined. USB CDC prints PASS/FAIL
+  and `DEMO RESULT 12/12`. The demo does not call `PARSECS_TRANSMIT_APP` /
+  `PARSECS_RECEIVE_APP` (High Level owns L3). PING/PONG is gone.
 
 ## i2c-parsecs-lowlevel
 
