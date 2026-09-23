@@ -17,6 +17,11 @@
 void PARSECS_Layer1_Init(void);
 void PARSECS_LAYER1(SLAVE *slave);
 
+#ifdef SPI_MASTER
+bool PARSECS_Layer1_HoldLinesLow(void);
+void PARSECS_Layer1_ReleaseLines(void);
+#endif
+
 #endif
 
 //! @}

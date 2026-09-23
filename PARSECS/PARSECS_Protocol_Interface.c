@@ -25,6 +25,33 @@
 static void i2c_cs_noop(void)
 {
 }
+
+static int8_t register_i2c_board(uint8_t slot, PARSECS_APP_BOARD_ADDRESS address, uint8_t i2c_addr_7bit)
+{
+	PARSECS_PROTOCOL_BOARD_DESCRIPTOR *board;
+	int8_t slave_id;
+
+	if (slot >= MAX_BOARD_COUNT)
+	{
+		return -1;
+	}
+	slave_id = PARSECS_Add_Slave(i2c_cs_noop, i2c_cs_noop);
+	if (slave_id < 0)
+	{
+		return -1;
+	}
+	if (PARSECS_Set_Slave_I2C_Address(slave_id, i2c_addr_7bit) != 0)
+	{
+		return -1;
+	}
+	board = &CORE_TX_Wit_Boards[slot];
+	board->boardSlaveID = slave_id;
+	board->boardAddress = address;
+	PARSECS_ProtocolDescriptorInit(&board->boardProtocolDescriptor);
+	PARSECS_ProtocolCommunicationInterfaceInit(&board->boardProtocolInterface);
+	board->boardAvailable = true;
+	return 0;
+}
 #endif
 
 static PARSECS_PROTOCOL_BOARD_DESCRIPTOR *PARSECS_BoardByAddress(PARSECS_APP_BOARD_ADDRESS boardAddress)
@@ -60,23 +87,18 @@ void SPI_Print_Raw_Packet(uint8_t sequence_number, uint8_t size)
 //! \private
 void PARSECS_Protocol_Interface_Task_Init()
 {
+#ifdef SPI_MASTER
+	(void)register_i2c_board(0U, CORE_TX_WIT_COMM_BOARD, PARSECS_I2C_ADDR_COMM_7BIT);
+	(void)register_i2c_board(1U, CORE_TX_WIT_MOBILITY_BOARD, PARSECS_I2C_ADDR_MOBILITY_7BIT);
+#else
 	PARSECS_PROTOCOL_BOARD_DESCRIPTOR *board = &CORE_TX_Wit_Boards[0];
 
-#ifdef SPI_MASTER
-	int8_t slave_id = PARSECS_Add_Slave(i2c_cs_noop, i2c_cs_noop);
-	if (slave_id < 0)
-	{
-		return;
-	}
-	board->boardSlaveID = slave_id;
-	board->boardAddress = CORE_TX_WIT_COMM_BOARD;
-#else
 	board->boardSlaveID = 0;
 	board->boardAddress = CORE_TX_WIT_MOTHERBOARD;
-#endif
 	PARSECS_ProtocolDescriptorInit(&board->boardProtocolDescriptor);
 	PARSECS_ProtocolCommunicationInterfaceInit(&board->boardProtocolInterface);
 	board->boardAvailable = true;
+#endif
 }
 //! Function used to implement the PARSECS High Level Task at board level. This function should be called for each configured board. This function is called by the general task and should not be called by the user
 //!

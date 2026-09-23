@@ -23,6 +23,7 @@ int8_t PARSECS_CHECK_APP_TX_READY(uint8_t slave_id);
 
 #ifdef SPI_MASTER
 int8_t PARSECS_Add_Slave(SPI_SLAVE_FUNCTION SelectFunctionPointer, SPI_SLAVE_FUNCTION DeselectFunctionPointer);//adaug slave
+int8_t PARSECS_Set_Slave_I2C_Address(int8_t slave_id, uint8_t addr_7bit);
 #endif
 
 uint8_t PARSECS_GetApp_tx_buffer_max_length(void);

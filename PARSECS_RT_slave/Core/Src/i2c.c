@@ -21,7 +21,7 @@
 #include "i2c.h"
 
 /* USER CODE BEGIN 0 */
-
+#include "slave_identity.h"
 /* USER CODE END 0 */
 
 I2C_HandleTypeDef hi2c1;
@@ -53,7 +53,12 @@ void MX_I2C1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN I2C1_Init 2 */
-
+  /* .ioc keeps OwnAddress1 at 0x08. PARSECS_SLAVE_INDEX 1 selects 0x09. */
+  hi2c1.Init.OwnAddress1 = (uint32_t)(PARSECS_SLAVE_I2C_ADDR_7BIT << 1);
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE END I2C1_Init 2 */
 
 }

@@ -75,21 +75,25 @@
 
 /*!
  * \def SLAVE_COUNT
- * Defines the number of maximum Low Level slaves supported. Master keeps the
- * original table size; this I2C port only calls PARSECS_Add_Slave once.
+ * Defines the number of maximum Low Level slaves supported. The master table
+ * is large enough for every WIT peer; this I2C port registers two of them.
  */
 /*!
  * \def MAX_BOARD_COUNT
- * High Level board table size. I2C has one peer, so this is 1 on both nodes.
+ * High Level board table size. The master has two I2C peers (comm and
+ * mobility). A slave image has one local descriptor.
  * USER_Send / USER_Receive look up the descriptor by APP board address, they
  * do not use the WIT enum as an array index (CORE_TX_WIT_COMM_BOARD is 6).
  */
+#define PARSECS_I2C_ADDR_COMM_7BIT		0x08U
+#define PARSECS_I2C_ADDR_MOBILITY_7BIT	0x09U
 #ifdef SPI_MASTER
 #define SLAVE_COUNT 				8
+#define MAX_BOARD_COUNT				2
 #else
 #define SLAVE_COUNT					1
-#endif
 #define MAX_BOARD_COUNT				1
+#endif
 
 /*!
  * \def SPI_DATA_LENGTH
@@ -160,6 +164,7 @@ typedef struct
 {
 	SPI_SLAVE_FUNCTION select_function; 							/**<Pointer to a function that selects the slave through SSEL*/
 	SPI_SLAVE_FUNCTION deselect_function;							/**<Pointer to a function that deselects the slave through SSEL*/
+	uint16_t i2c_address;											/**<HAL address: 7-bit I2C address shifted left by 1*/
 	SPI_BASE_FRAME spi_packet_tx;									/**<SPI_BASE_FRAME for transmission - the layer 2 TX buffer*/
 	SPI_BASE_FRAME spi_packet_rx_1;									/**<SPI_BASE_FRAME 1 for reception - the layer 2 RX 1 buffer*/
 	SPI_BASE_FRAME spi_packet_rx_2;									/**<SPI_BASE_FRAME 2 for reception - the layer 2 RX 2 buffer*/

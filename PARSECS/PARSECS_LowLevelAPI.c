@@ -223,6 +223,7 @@ int8_t PARSECS_Add_Slave(SPI_SLAVE_FUNCTION SelectFunctionPointer, SPI_SLAVE_FUN
 		{			
 			slaves[i].select_function = SelectFunctionPointer; //selectez slave-ul
 			slaves[i].deselect_function = DeselectFunctionPointer; //deselectez slave-ul
+			slaves[i].i2c_address = (uint16_t)(PARSECS_I2C_ADDR_COMM_7BIT << 1);
 			slaves[i].slave_enabled = 1;							//pun slave-ul pe enable
 			PARSECS_InitRingBuffers(&slaves[i]);								//initializez buffer-ul circular pentru fiecare slave
 			CRC16_constructor(&slaves[i].spi_packet_rx_1.crc16_object);			// instantiez crc-ul pentru receptie
@@ -243,6 +244,24 @@ int8_t PARSECS_Add_Slave(SPI_SLAVE_FUNCTION SelectFunctionPointer, SPI_SLAVE_FUN
 		}
 	}
 	return -1;
+}
+
+//! Store the 7-bit I2C address Layer 1 uses for this slave.
+//! \param slave_id Identifier returned by \ref PARSECS_Add_Slave
+//! \param addr_7bit 7-bit address (not shifted)
+//! \return 0 on success, -1 if slave_id is not an enabled slave
+int8_t PARSECS_Set_Slave_I2C_Address(int8_t slave_id, uint8_t addr_7bit)
+{
+	if ((slave_id < 0) || ((uint8_t)slave_id >= SLAVE_COUNT))
+	{
+		return -1;
+	}
+	if (slaves[slave_id].slave_enabled == 0)
+	{
+		return -1;
+	}
+	slaves[slave_id].i2c_address = (uint16_t)((uint16_t)addr_7bit << 1);
+	return 0;
 }
 #endif
 
