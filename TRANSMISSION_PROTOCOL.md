@@ -147,7 +147,8 @@ The two slave lines come from the two slave boards, not from one log.
 Saleae still shows L2 `7E … 8C` DATA (WIT PDU + BER, not ASCII PING) then L3
 ACK `7E 00 xx 7C …`. Leading/trailing `00` bytes are L1 dummy. Dummy `0x00` L1
 bytes keep the link pumping when a TX ring is empty, matching PARSECS Layer 1
-idle behaviour.
+idle behaviour. The byte-by-byte timeline of one cycle, from one bus-low gap
+to the next, is in [SALEAE.md](SALEAE.md).
 
 ## Error handling
 
