@@ -1,5 +1,21 @@
 # Changelog
 
+## feature/dual-slave-get-loop
+
+- Second I2C peer: master `MAX_BOARD_COUNT` is 2. Comm stays `0x08` /
+  `CORE_TX_WIT_COMM_BOARD` (GetResponse `42`); mobility is `0x09` /
+  `CORE_TX_WIT_MOBILITY_BOARD` (GetResponse `43`). `SLAVE.i2c_address` and
+  `PARSECS_Set_Slave_I2C_Address` replace the hardcoded Layer 1 address.
+- Slave firmware is one project, two images. `PARSECS_SLAVE_INDEX` in
+  `slave_identity.h` (0 default, or `-DPARSECS_SLAVE_INDEX=1`) picks the board,
+  the answer value, and `OwnAddress1`. The `.ioc` address stays `0x08`; slave
+  `i2c.c` applies the override after `MX_I2C1_Init`.
+- Demo loops GetRequest/GetResponse for comm then mobility. A slave that does
+  not answer within 2 s is logged FAIL and the cycle continues. After both
+  replies, Layer 1 keeps running for 100 ms so the last ACK can leave, then
+  the master deinits I2C1 and drives SCL low, then SDA low, for 500 ms.
+  Release is SDA first, then SCL, then `MX_I2C1_Init`.
+
 ## i2c-parsecs-highlevel
 
 - Ported the PARSECS High Level Substack (Layer 4 WIT PDU, Layer 6 BER, Layer 7

@@ -22,7 +22,6 @@
 #include "i2c.h"
 #include "usbd_cdc_if.h"
 
-#define SLAVE_ADDRESS               (0x08 << 1)
 #define DUMMY_BYTE                  0x00U
 #define MAX_CONSEC_ERRORS           10U
 #define TRANSACTION_TIMEOUT_TICKS   50U
@@ -71,12 +70,16 @@ typedef enum {
 } bus_state_t;
 
 static SLAVE *l1_active_slave = NULL;
+static uint16_t active_i2c_address = 0U;
 static volatile uint8_t tx_byte_val;
 static volatile uint8_t rx_byte_val;
 static volatile bus_state_t bus_state = BUS_IDLE;
 static uint16_t wait_ticks = 0U;
+static volatile bool hold_requested = false;
+static volatile bool hold_active = false;
+static uint16_t hold_wait = 0U;
 
-static void i2c_resync(void)
+static void i2c_quiesce(void)
 {
 	HAL_NVIC_DisableIRQ(I2C1_EV_IRQn);
 	HAL_NVIC_DisableIRQ(I2C1_ER_IRQn);
@@ -92,11 +95,49 @@ static void i2c_resync(void)
 	HAL_NVIC_ClearPendingIRQ(DMA1_Stream0_IRQn);
 	HAL_NVIC_ClearPendingIRQ(DMA1_Stream6_IRQn);
 
+	bus_state = BUS_IDLE;
+	l1_active_slave = NULL;
+	wait_ticks = 0U;
+}
+
+static void i2c_restore(void)
+{
 	HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
 	HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
 
 	MX_I2C1_Init();
 	bus_state = BUS_IDLE;
+}
+
+static void i2c_resync(void)
+{
+	i2c_quiesce();
+	i2c_restore();
+}
+
+/* Open-drain, driven to state. ODR is written before the mode switch so the
+ * pin does not glitch the other way when it becomes an output. */
+static void bus_pin_output_od(uint16_t pin, GPIO_PinState state)
+{
+	GPIO_InitTypeDef gpio = {0};
+
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+	HAL_GPIO_WritePin(GPIOB, pin, state);
+	gpio.Pin = pin;
+	gpio.Mode = GPIO_MODE_OUTPUT_OD;
+	gpio.Pull = GPIO_NOPULL;
+	gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+	HAL_GPIO_Init(GPIOB, &gpio);
+	HAL_GPIO_WritePin(GPIOB, pin, state);
+}
+
+static void drive_lines_low(void)
+{
+	/* SCL first. SDA falling while SCL is high would be a START. */
+	bus_pin_output_od(GPIO_PIN_6, GPIO_PIN_RESET);
+	bus_pin_output_od(GPIO_PIN_7, GPIO_PIN_RESET);
+	hold_active = true;
+	hold_wait = 0U;
 }
 
 static void start_round(SLAVE *slave)
@@ -108,10 +149,11 @@ static void start_round(SLAVE *slave)
 	}
 
 	tx_byte_val = have_tx ? PARSECS_RingPeekOne(&slave->l1_buffer_tx) : DUMMY_BYTE;
+	active_i2c_address = slave->i2c_address;
 
 	bus_state  = BUS_SENDING;
 	wait_ticks = 0U;
-	if (HAL_I2C_Master_Seq_Transmit_DMA(&hi2c1, SLAVE_ADDRESS, (uint8_t *)&tx_byte_val, 1U,
+	if (HAL_I2C_Master_Seq_Transmit_DMA(&hi2c1, active_i2c_address, (uint8_t *)&tx_byte_val, 1U,
 	                                     I2C_FIRST_AND_LAST_FRAME) == HAL_OK)
 	{
 		if (have_tx)
@@ -132,7 +174,7 @@ void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
 	if (hi2c->Instance != I2C1) return;
 
 	bus_state = BUS_RECEIVING;
-	if (HAL_I2C_Master_Seq_Receive_DMA(hi2c, SLAVE_ADDRESS, (uint8_t *)&rx_byte_val, 1U,
+	if (HAL_I2C_Master_Seq_Receive_DMA(hi2c, active_i2c_address, (uint8_t *)&rx_byte_val, 1U,
 	                                    I2C_FIRST_AND_LAST_FRAME) != HAL_OK)
 	{
 		bus_state = BUS_IDLE;
@@ -170,12 +212,62 @@ void PARSECS_Layer1_Init(void)
 {
 	bus_state = BUS_IDLE;
 	l1_active_slave = NULL;
+	active_i2c_address = 0U;
 	wait_ticks = 0U;
+	hold_requested = false;
+	hold_active = false;
+	hold_wait = 0U;
 	error_reset();
+}
+
+bool PARSECS_Layer1_HoldLinesLow(void)
+{
+	if (hold_active)
+	{
+		return true;
+	}
+
+	/* Stop new rounds immediately. An in-flight byte is allowed to finish. */
+	hold_requested = true;
+	if (bus_state != BUS_IDLE)
+	{
+		if (++hold_wait <= TRANSACTION_TIMEOUT_TICKS)
+		{
+			return false;
+		}
+	}
+
+	i2c_quiesce();
+	drive_lines_low();
+	error_reset();
+	return true;
+}
+
+void PARSECS_Layer1_ReleaseLines(void)
+{
+	if (!hold_active)
+	{
+		return;
+	}
+
+	/* SDA first, while SCL is still low, so the rising edge is not a STOP. */
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+	hold_requested = false;
+	hold_active = false;
+	hold_wait = 0U;
+	error_reset();
+	led_fault_off();
+	i2c_restore();
 }
 
 void PARSECS_LAYER1(SLAVE *slave)
 {
+	if (hold_requested)
+	{
+		return;
+	}
+
 	if (bus_state != BUS_IDLE)
 	{
 		if (++wait_ticks > TRANSACTION_TIMEOUT_TICKS)
