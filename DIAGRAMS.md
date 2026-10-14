@@ -4,12 +4,13 @@ Visual reference only - see [TRANSMISSION_PROTOCOL.md](TRANSMISSION_PROTOCOL.md)
 
 ## Hardware wiring
 
-    Master (STM32F407 Disc)              Slave (STM32F407 Disc)
-      PB6 SCL o---------+----------------o PB6 SCL
-      PB7 SDA o------+--|----------------o PB7 SDA
-      GND     o------|--|----------------o GND
-      USB <-> PC     |  |                USB <-> PC
-                   [4k7][4k7] to 3.3V (pull-ups on SDA/SCL)
+    Master                         Comm slave (0x08)          Mobility slave (0x09)
+      PB6 SCL o--------------------o PB6 SCL ----------------o PB6 SCL
+      PB7 SDA o--------------------o PB7 SDA ----------------o PB7 SDA
+      GND     o--------------------o GND     ----------------o GND
+      USB <-> PC                   USB <-> PC                USB <-> PC
+
+    [4k7] pull-ups to 3.3V on SDA and SCL, once for the whole bus.
 
 ## One round on the wire
 
@@ -17,7 +18,11 @@ Visual reference only - see [TRANSMISSION_PROTOCOL.md](TRANSMISSION_PROTOCOL.md)
     read  (M<-S):  Sr 0x11 A  d0  N  P     (1 byte, popped from slave's l1_buffer_tx)
 
     S = START, Sr = repeated START, A = ACK, N = NACK, P = STOP
-    0x10 / 0x11 = slave address 0x08 shifted, write / read
+    0x10 / 0x11 = comm slave address 0x08 shifted, write / read
+    0x12 / 0x13 = mobility slave address 0x09 shifted, write / read
+
+Between demo repeats the master releases I2C1 and drives SCL low, then SDA
+low, for 500 ms. Both lines go back high (SDA first) before the next round.
 
 Each byte is a complete standalone `I2C_FIRST_AND_LAST_FRAME` DMA transfer
 (`HAL_I2C_*_Seq_*_DMA`) — Layer 1 is still the byte pump; Layer 2 assembles
