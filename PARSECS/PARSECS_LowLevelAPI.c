@@ -14,6 +14,14 @@
 //! Contains the implementation of the PARSECS Low Level Substack containing Layer 1, Layer 2 and Layer 3
 #include "PARSECS_LowLevelAPI.h"
 #include "PARSECS_Includes.h"
+#include "PARSECS_Port.h"
+
+//! A new DATA frame may be queued only once the previous one was ACKed (or dropped by the ARQ)
+//! and Layer 2 is not encoding anything, since arq_buffer is what a retransmission resends.
+static bool PARSECS_TX_Busy(const SLAVE *slave)
+{
+	return (slave->STATUS_FLAG & (FG_LL_FTIP | FG_LL_FTT | FG_HL_FTTR | FG_ARQ_WAIT_ACK | FG_ARQ_RETX)) != 0;
+}
 
 //! The PARSECS Low Level Substack transmit (TX) API
 //!
@@ -26,14 +34,14 @@
 //! \param data_length The length of the buffer
 //! \param[out] sent_sequence_number This is an output parameter where this function will write the sequence number of the packet that was sent
 //! \return  0 In case of a successfully scheduled transmission
-//! \return -1 In case of a wrong slave_id value or if the stack is busy
+//! \return -1 In case of a wrong slave_id value or if the stack is busy (including while the previous DATA frame waits for its ACK)
 //! \return -2 In case the data_length is zero
 //! \return -3 In case of the data_length is higher than supported as defined by DATA_BUFFER_SIZE
 int8_t PARSECS_TRANSMIT_APP(uint8_t slave_id ,uint8_t *data, uint8_t data_length, uint8_t *sent_sequence_number)
 {   
 	// apelata de aplicatie
 	// daca nu am trimis inca ACK pentru pachetul receptionat inainte nu las transmisie... returnez busy
-	if (slave_id > SLAVE_COUNT)
+	if (slave_id >= SLAVE_COUNT)
 	{
 		return -1;
 	}
@@ -46,10 +54,11 @@ int8_t PARSECS_TRANSMIT_APP(uint8_t slave_id ,uint8_t *data, uint8_t data_length
 		return -3;
 	}
 
-	if (((slaves[slave_id].STATUS_FLAG & FG_LL_FTIP) == 0) && ((slaves[slave_id].STATUS_FLAG & FG_LL_FTT) == 0))//nu am frame in progres sau transmit
+	if (!PARSECS_TX_Busy(&slaves[slave_id]))
 	{
-		memcpy(slaves[slave_id].spi_packet_tx.app_buffer, data , data_length);//copiez in buffer data ce vreau sa transmit
-		slaves[slave_id].spi_packet_tx.app_buffer_length = data_length;//pun lungime +1  pt  ca am lungime + tipul de pachet
+		// Layer 3 copies arq_buffer into spi_packet_tx, so a pending ACK/NACK cannot overwrite it
+		memcpy(slaves[slave_id].arq_buffer, data , data_length);//copiez in buffer data ce vreau sa transmit
+		slaves[slave_id].arq_length = data_length;
 		slaves[slave_id].STATUS_FLAG |= FG_HL_FTTR;// setez flag intre hl si layer 3 transmit
 		if (sent_sequence_number != NULL)
 		{
@@ -74,7 +83,11 @@ int8_t PARSECS_TRANSMIT_APP(uint8_t slave_id ,uint8_t *data, uint8_t data_length
 //! \return -1 The PARSECS Low Level Substack is currently busy and unable to trasnmit new data
 int8_t PARSECS_CHECK_APP_TX_READY(uint8_t slave_id)
 {
-	if (((slaves[slave_id].STATUS_FLAG & FG_LL_FTIP) == 0) && ((slaves[slave_id].STATUS_FLAG & FG_LL_FTT) == 0))//nu am frame in progres sau transmit
+	if (slave_id >= SLAVE_COUNT)
+	{
+		return -1;
+	}
+	if (!PARSECS_TX_Busy(&slaves[slave_id]))
 	{
 		return 0;
 	}	
@@ -239,6 +252,7 @@ int8_t PARSECS_Add_Slave(SPI_SLAVE_FUNCTION SelectFunctionPointer, SPI_SLAVE_FUN
 			slaves[i].last_NACKed_packet_sequence_number = 0;
 			slaves[i].ub_L2_TransState = 0;  // state pt layer 2 transmit
 			slaves[i].layer2_transmit_packet_index = 0; 
+			PARSECS_ARQ_Reset(&slaves[i]);
 			number_of_active_slaves++;
 			return i;
 		}
@@ -323,6 +337,100 @@ int16_t PARSECS_Get_last_NACKed_packet_sequence_number(uint8_t slave_id)
 	}
 	#endif
 	return slaves[slave_id].last_NACKed_packet_sequence_number;
+}
+
+//! Get the ARQ link state of a slave
+//! \param slave_id The unique slave identifier obtained by calling \ref PARSECS_Add_Slave (0 on a slave node)
+//! \return -1 in case an out of range slave_id is given
+//! \return -2 in case the slave_id parameter points to an inexistant or uninitialized slave
+//! \return \ref PARSECS_LINK_UP or \ref PARSECS_LINK_DOWN
+int8_t PARSECS_Get_Link_State(uint8_t slave_id)
+{
+	if (slave_id >= SLAVE_COUNT)
+	{
+		return -1;
+	}
+	if (slaves[slave_id].slave_enabled == false)
+	{
+		return -2;
+	}
+	return (int8_t)slaves[slave_id].link_state;
+}
+
+//! Get the ARQ diagnostic counters of a slave
+//! \param slave_id The unique slave identifier obtained by calling \ref PARSECS_Add_Slave (0 on a slave node)
+//! \param[out] retransmissions Total DATA frames sent again after a NACK or timeout. May be NULL
+//! \param[out] link_down_events Total DATA frames dropped after \ref ARQ_MAX_RETRIES. May be NULL
+//! \return 0 on success
+//! \return -1 in case an out of range slave_id is given
+//! \return -2 in case the slave_id parameter points to an inexistant or uninitialized slave
+int8_t PARSECS_Get_ARQ_Stats(uint8_t slave_id, uint32_t *retransmissions, uint32_t *link_down_events)
+{
+	if (slave_id >= SLAVE_COUNT)
+	{
+		return -1;
+	}
+	if (slaves[slave_id].slave_enabled == false)
+	{
+		return -2;
+	}
+	if (retransmissions != NULL)
+	{
+		*retransmissions = slaves[slave_id].arq_retransmissions;
+	}
+	if (link_down_events != NULL)
+	{
+		*link_down_events = slaves[slave_id].arq_link_down_events;
+	}
+	return 0;
+}
+
+//! Restart the Low Level link of a slave from a clean state
+//!
+//! Empties the Layer 1 rings, resets both Layer 2 state machines, the SEQ counters and the ARQ state,
+//! and drops any frame in flight. Both ends must do this together (e.g. after a slave is plugged in),
+//! otherwise the first DATA frame of the restarted side can match the SEQ the other side delivered last
+//! and be re-ACKed as a duplicate without reaching the High Level.
+//! \param slave_id The unique slave identifier obtained by calling \ref PARSECS_Add_Slave (0 on a slave node)
+//! \return 0 on success
+//! \return -1 in case an out of range slave_id is given
+//! \return -2 in case the slave_id parameter points to an inexistant or uninitialized slave
+int8_t PARSECS_Reset_Link(uint8_t slave_id)
+{
+	SLAVE *slave;
+	uint32_t key;
+
+	if (slave_id >= SLAVE_COUNT)
+	{
+		return -1;
+	}
+	slave = &slaves[slave_id];
+	if (slave->slave_enabled == false)
+	{
+		return -2;
+	}
+
+	// the rings are also touched by the Layer 1 ISRs
+	key = PARSECS_IrqLock();
+	PARSECS_InitRingBuffers(slave);
+	PARSECS_IrqUnlock(key);
+
+	slave->STATUS_FLAG = 0;
+	slave->ub_L2_TransState = 0;
+	slave->ub_L2_RecState = 0;
+	slave->layer2_transmit_packet_index = 0;
+	slave->uw_L2_ByteCount0 = 0;
+	slave->spi_packet_rx_1.frame_in_progress = false;
+	slave->spi_packet_rx_1.packet_ok = 0;
+	slave->spi_packet_rx_2.frame_in_progress = false;
+	slave->spi_packet_rx_2.packet_ok = 0;
+	slave->current_seq_no = 0;
+	slave->last_received_packet_sequence_number = 0;
+	slave->last_transmitted_data_packet_sequence_number = 0;
+	slave->last_ACKed_packet_sequence_number = 0;
+	slave->last_NACKed_packet_sequence_number = 0;
+	PARSECS_ARQ_Reset(slave);
+	return 0;
 }
 
 //! @}

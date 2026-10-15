@@ -1,5 +1,30 @@
 # Changelog
 
+## feature/l3-retransmission
+
+- Layer 3 stop-and-wait ARQ per slave. The DATA frame is kept in
+  `SLAVE.arq_buffer` until an ACK with its SEQ arrives. A NACK resends it at
+  once. A timeout (`ARQ_RTO_ROUNDS`, 70 Layer 1 rounds of that slave) resends
+  it with doubling backoff, capped at `ARQ_RTO_MAX_ROUNDS`.
+  After `ARQ_MAX_RETRIES` (3) the frame is dropped and the slave reports
+  `PARSECS_LINK_DOWN` until a later frame is ACKed.
+- The timer counts `SLAVE.l1_rounds` (new; incremented in Layer 1) and pauses
+  while a peer frame is being received.
+- Receiver re-ACKs a repeated SEQ without delivering it twice.
+- Layer 2 takes the DATA SEQ from Layer 3, starts the ARQ timer when a DATA
+  frame has been sent, and records the received SEQ only for DATA frames that
+  pass the CRC.
+- Fixed: sending an ACK/NACK cleared `FG_HL_FTTR` and overwrote the queued DATA
+  frame, so High Level data could be lost. `PARSECS_TRANSMIT_APP` checked the
+  slave id with `>` instead of `>=`.
+- Low Level API: `PARSECS_Get_Link_State`, `PARSECS_Get_ARQ_Stats`,
+  `PARSECS_Reset_Link` (hook for a future hot-swap). `PARSECS_CHECK_APP_TX_READY`
+  stays false while a frame waits for its ACK.
+- Demo USB lines end with `link=UP|DOWN retx=N dropped=N`.
+- `PARSECS_L1_FAULT_INJECT_EVERY` (off by default) corrupts every Nth Layer 1
+  byte for hardware tests.
+- Host tests in `test/arq` (`make -C test/arq run`).
+
 ## feature/dual-slave-get-loop
 
 - Second I2C peer: master `MAX_BOARD_COUNT` is 2. Comm stays `0x08` /

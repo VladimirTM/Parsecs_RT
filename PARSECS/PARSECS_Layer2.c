@@ -55,7 +55,7 @@ void PARSECS_TRANSMIT_LAYER2(SLAVE *slave)
 			{
 				if (slave->spi_packet_tx.packet_type == TYPE_DATA)
 				{
-					slave->spi_packet_tx.seq_no = slave->current_seq_no++; //nu am ACK/NACK	? atunci incrementez sequence no
+					// SEQ is assigned by Layer 3 so a retransmission reuses the original value
 					slave->last_transmitted_data_packet_sequence_number = slave->spi_packet_tx.seq_no;
 				}
 				else
@@ -102,6 +102,13 @@ void PARSECS_TRANSMIT_LAYER2(SLAVE *slave)
 				PARSECS_RingWriteOne(&slave->l1_buffer_tx, (uint8_t)(slave->uw_crc16 & 0xFF));
 				slave->STATUS_FLAG &= ~FG_LL_FTIP;  //resetez flagul de frame transmit in progress
 				slave->STATUS_FLAG &= ~FG_LL_FTT;   //resetez flagul de frame  to transmit			
+				if (slave->spi_packet_tx.packet_type == TYPE_DATA)
+				{
+					// whole frame is in the L1 ring: start the ARQ retransmission timer
+					slave->STATUS_FLAG |= FG_ARQ_WAIT_ACK;
+					slave->arq_elapsed = 0;
+					slave->arq_last_round = slave->l1_rounds;
+				}
 				slave->ub_L2_TransState = 0;
 				break;
 			}
@@ -180,7 +187,6 @@ uint8_t PARSECS_RECEIVE_LAYER2_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet)
 				if (packet->frame_in_progress == true)
 				{
 					slave->ub_L2_RecState = 3;					   // ma duc in starea 2
-					slave->last_received_packet_sequence_number = packet->seq_no;
 				}
 				else
 				{	
@@ -235,6 +241,11 @@ uint8_t PARSECS_RECEIVE_LAYER2_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet)
 					packet->packet_ok = 1; //am un pachet bun
 					slave->ub_L2_RecState = 0;			//resetez automatul si ma duc in starea 0
 					slave->STATUS_FLAG &= ~FG_NACK;     // RESETEZ FALGUL DE NACK
+					// only a CRC-checked DATA SEQ may be echoed back in our ACK; an incoming ACK/NACK must not overwrite it
+					if (packet->packet_type == TYPE_DATA)
+					{
+						slave->last_received_packet_sequence_number = packet->seq_no;
+					}
 				}
 				else
 				{

@@ -62,15 +62,77 @@ Bytes Layer 1 moves are assembled by Layer 2:
 | CRC | incremental CRC16 (`crc16.c`), same as the SPI stack |
 
 ACK/NACK frames have `LEN = 0` (no DATA bytes). DATA frames carry a WIT PDU
-segment queued by High Level through `PARSECS_TRANSMIT_APP`.
+segment queued by High Level through `PARSECS_TRANSMIT_APP`. A DATA frame's SEQ
+comes from Layer 3. An ACK or NACK carries the SEQ of the last DATA frame that
+passed its CRC check.
 
 ## Layer 3
 
-- `PARSECS_TRANSMIT_APP` sets `FG_HL_FTTR`. L3 TX turns that into a DATA frame
-  (`FG_LL_FTT`) unless an ACK is pending (ACK wins).
-- L3 RX: a good DATA frame sets `FG_ACK` and `FG_HL_NDF_*`; ACK/NACK update the
-  last ACKed/NACKed sequence numbers. `PARSECS_RECEIVE_APP` returns the DATA
-  payload. The High Level job is the only caller; the demo must not steal it.
+- `PARSECS_TRANSMIT_APP` copies the payload into `SLAVE.arq_buffer` and sets
+  `FG_HL_FTTR`. L3 TX turns that into a DATA frame (`FG_LL_FTT`) with a new
+  SEQ, unless an ACK is pending (ACK wins) or the previous frame is still
+  unacknowledged.
+- TX priority each tick: ACK, NACK, CMD, retransmission, new DATA. Sending an
+  ACK or NACK does not discard a queued DATA frame.
+- L3 RX: a good DATA frame sets `FG_ACK` and, unless it is a duplicate,
+  `FG_HL_NDF_*`. `PARSECS_RECEIVE_APP` returns the DATA payload. The High Level
+  job is the only caller; the demo must not steal it.
+
+## Retransmission (ARQ)
+
+Layer 3 runs stop-and-wait ARQ per `SLAVE` (per peer on the master): one DATA
+frame in flight, and the next one leaves only after the peer ACKs it.
+
+- When Layer 2 finishes sending a DATA frame it sets `FG_ARQ_WAIT_ACK` and
+  starts the timer.
+- An ACK whose SEQ equals `arq_seq` completes the frame. An ACK with another
+  SEQ is ignored.
+- A NACK while waiting schedules a retransmission at once (`FG_ARQ_RETX`).
+  The RTO stays the same.
+- Timeout: once `arq_elapsed` reaches `arq_rto`, the frame is resent and the
+  RTO doubles, capped at `ARQ_RTO_MAX_ROUNDS`.
+- A retransmission reuses the stored bytes and the original SEQ.
+- After `ARQ_MAX_RETRIES` retransmissions without an ACK, the frame is dropped.
+  The slave becomes `PARSECS_LINK_DOWN` and `arq_link_down_events` increments.
+  `PARSECS_CHECK_APP_TX_READY` turns true again, and the next frame acts as a
+  probe. Its ACK sets the link back to `PARSECS_LINK_UP`.
+- Receiver side: a DATA frame whose SEQ equals `last_delivered_rx_seq` is ACKed
+  again but not delivered. This covers the case where an ACK was lost.
+
+Time is counted in Layer 1 rounds of that slave (`SLAVE.l1_rounds`), not
+milliseconds, so it does not depend on the task period or on how many peers the
+master polls. The master counts every round it starts, including failed ones.
+The slave counts every completed round. The timer pauses while a peer frame is
+being received, because the peer can only send our ACK after that frame. So a
+long DATA frame from the peer does not cause a false timeout.
+
+The base RTO is `2 * RAW_RING_BUFFER_SIZE + DATA_ENCODING_SIZE +
+ARQ_RTO_MARGIN_ROUNDS` = 70 rounds. That covers the ACK waiting behind a full
+TX ring on each side, plus the ACK frame, plus a margin. With an absent peer,
+the worst case before `LINK_DOWN` is 70 + 140 + 280 + 280 = 770 rounds.
+
+Low Level API:
+
+| Function | Returns |
+|---|---|
+| `PARSECS_Get_Link_State(id)` | `PARSECS_LINK_UP` / `PARSECS_LINK_DOWN`, -1 bad id, -2 slave not enabled |
+| `PARSECS_Get_ARQ_Stats(id, &retx, &dropped)` | 0, or -1 / -2; either out pointer may be `NULL` |
+| `PARSECS_Reset_Link(id)` | 0, or -1 / -2; clears rings, Layer 2/3 state, SEQ counters and ARQ state |
+
+`PARSECS_Reset_Link` is the entry point for a future hot-swap: when a peer is
+replaced or restarts, both ends should reset so a stale SEQ is not taken as a
+duplicate. Diagnostic counters survive the reset. The demo appends
+` link=UP|DOWN retx=N dropped=N` to its USB lines.
+
+`PARSECS_L1_FAULT_INJECT_EVERY` (undefined by default) flips every Nth non-dummy
+Layer 1 TX byte, to exercise NACK and retransmission on hardware, e.g.
+`-DPARSECS_L1_FAULT_INJECT_EVERY=97`.
+
+Host tests: `make -C test/arq run` (gcc, MSYS2 on Windows). The tests run Layer 2,
+Layer 3 and the Low Level API of two nodes over a simulated Layer 1. They cover
+clean delivery, lost DATA, CRC corruption, lost ACK, an absent peer and
+recovery, SEQ wrap, a stale ACK, queued data behind an ACK, a long peer frame,
+and `PARSECS_Reset_Link`.
 
 ## Layer 4 / 6 / 7
 
@@ -162,8 +224,10 @@ to the next, is in [SALEAE.md](SALEAE.md).
   and PB7 low as open-drain outputs. `PARSECS_Layer1_ReleaseLines` releases
   PB7, then PB6, then calls `MX_I2C1_Init`.
 - A byte popped from `l1_buffer_tx` is not put back on error; a byte dropped
-  because `l1_buffer_rx` was full is also not retried. L2 CRC failure raises
-  `FG_NACK` and the peer transmits a NACK frame.
+  because `l1_buffer_rx` was full is also not retried at Layer 1. Recovery is
+  at Layer 3. An L2 CRC failure raises `FG_NACK`, and the peer sends a NACK
+  frame, which triggers a retransmission. A frame that is lost entirely is resent
+  after the ARQ timeout. See [Retransmission (ARQ)](#retransmission-arq).
 
 ## Constants
 
@@ -175,6 +239,10 @@ to the next, is in [SALEAE.md](SALEAE.md).
 | Mobility I2C address | 0x09 | `PARSECS_I2C_ADDR_MOBILITY_7BIT`, slave index 1 |
 | `TRANSACTION_TIMEOUT_TICKS` | 50 | master L1 watchdog, and hold wait |
 | `MAX_CONSEC_ERRORS` | 10 | errors before a resync |
+| `ARQ_MAX_RETRIES` | 3 | retransmissions before a frame is dropped |
+| `ARQ_RTO_ROUNDS` | 70 | base retransmission timeout, in L1 rounds |
+| `ARQ_RTO_MAX_ROUNDS` | 280 | timeout backoff cap |
+| `PARSECS_L1_FAULT_INJECT_EVERY` | undefined | test aid: corrupt every Nth L1 byte |
 | `SPI_DATA_LENGTH` | 254 | max L2 DATA payload |
 | `MAX_BOARD_COUNT` | 2 / 1 | master peers / one descriptor on a slave |
 | `PARSECS_WIT_FRAME_LENGTH` | 1024 | L4 assembled WIT FRAME |
