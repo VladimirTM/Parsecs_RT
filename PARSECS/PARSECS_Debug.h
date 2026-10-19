@@ -13,8 +13,8 @@
  * This define enable de debug mode of the PARSECS Stack. This implies the activation of all the printing to stdout.
  * If this define is commented then no printing is done on stdout from the code of the PARSECS stack
  */
-/* Output goes to USB CDC through LOG_SERIAL (log.c). The prints run inside
- * myTestTask, so comment this out for clean round-trip timing on PE7. */
+/* Output goes to USB CDC through LOG_SERIAL (log.c). LOG_SERIAL only queues
+ * the text and logTask sends it, so the prints do not stall I2C. */
 #define I2C_PROTOCOL_DEBUG
 
 #ifdef I2C_PROTOCOL_DEBUG

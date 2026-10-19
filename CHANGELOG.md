@@ -9,17 +9,21 @@
   `I2C_PROTOCOL_DEBUG` is defined in `PARSECS_Debug.h`, and each sub-flag can be
   switched on its own. `I2C_PROTOCOL_USER_FULL_BER_DEBUG` stays off.
 - `LOG_SERIAL` is now real (`PARSECS/log.c`, based on the coretx `log.c`). It
-  writes to USB CDC and does not initialise USB a second time. Before reusing
-  its buffer it waits up to `LOG_TX_TIMEOUT_MS` (10 ms) for the previous
-  transfer to finish. If the wait runs out, or USB is not enumerated yet, the
-  message is dropped and LD3 toggles. The demo's `usb_print` now goes through
-  `LOG_SERIAL` as well, because before it passed a stack buffer to
-  `CDC_Transmit_FS`.
+  writes to USB CDC and does not initialise USB a second time.
+- `LOG_SERIAL` does not block. It formats the message into a 2048 B RAM ring
+  (`LOG_RING_SIZE`) and returns. A separate `logTask` (`LOG_TaskStart`,
+  created in both `freertos.c`) sends the ring to CDC in chunks of up to
+  `LOG_CHUNK_SIZE` bytes whenever the previous transfer has finished. Before
+  this, each log line could wait up to 10 ms for USB inside `myTestTask`, which
+  showed up on I2C as a ~70 ms pause at the start of every transaction. If the
+  ring is full (for example the COM port is not open), the message is dropped
+  and LD3 toggles. The demo's `usb_print` and the Layer 1 resync messages also
+  go through `LOG_SERIAL`, so nothing else writes to the CDC endpoint.
 - Master round-trip probe on PE7 (`TIMING_Pin`): it goes high when a
   GetRequest is queued and low when the GetResponse arrives or the request
   times out. The PASS/FAIL line also prints `rtt=<ms>` from `HAL_GetTick`.
-  Logging runs in the same task, so with `I2C_PROTOCOL_DEBUG` on the pulse
-  includes the USB waits. Comment it out for clean timing.
+  With `I2C_PROTOCOL_DEBUG` on, the pulse only includes the time to format the
+  log lines, not the USB transfers.
 
 ## feature/dual-slave-get-loop
 

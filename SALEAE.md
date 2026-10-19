@@ -28,8 +28,10 @@ Add a third channel on master PE7. It goes high right after the GetRequest is
 queued (`PARSECS_Protocol_USER_Send` returned OK) and low when the matching
 GetResponse is read, or when the 2 s timeout fires. Each window has two pulses,
 comm first, then mobility. Pulse width is the APP round-trip. The master also
-prints it as `rtt=<ms>`, with 1 ms resolution. With `I2C_PROTOCOL_DEBUG` on, the
-pulse also contains the USB log waits.
+prints it as `rtt=<ms>`, with 1 ms resolution. Logging is asynchronous
+(`logTask` sends to USB), so I2C rounds keep running every 1 ms while logs are
+printed. With `I2C_PROTOCOL_DEBUG` on, the pulse only adds the time to format
+the log lines.
 
 ## How each byte shows up
 

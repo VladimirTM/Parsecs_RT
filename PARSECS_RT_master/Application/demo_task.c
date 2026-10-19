@@ -64,8 +64,8 @@ static uint32_t request_tick = 0U;
 static bool request_seen = false;
 #endif
 
-/* Shares LOG_SERIAL's static buffer and its wait for the previous CDC transfer,
- * so demo lines and stack logs do not overwrite each other in flight. */
+/* Goes through the same LOG_SERIAL ring as the stack logs, so demo lines and
+ * stack logs stay in order and never wait on USB. */
 static void usb_print(const char *msg)
 {
 	LOG_SERIAL("%s", msg);

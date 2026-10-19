@@ -20,7 +20,7 @@
 
 #include "main.h"
 #include "i2c.h"
-#include "usbd_cdc_if.h"
+#include "log.h"
 
 #define DUMMY_BYTE                  0x00U
 #define MAX_CONSEC_ERRORS           10U
@@ -55,10 +55,7 @@ static void error_reset(void)
 
 static void usb_print(const char *msg)
 {
-	if (CDC_Transmit_FS((uint8_t *)msg, (uint16_t)strlen(msg)) == USBD_BUSY)
-	{
-		led_warn();
-	}
+	LOG_SERIAL("%s", msg);
 }
 
 #ifdef SPI_MASTER
