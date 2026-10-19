@@ -6,6 +6,9 @@
  * Master polls comm (0x08, value 42) then mobility (0x09, value 43), lets ACKs
  * drain, holds SCL and SDA low, then repeats. The slave image is selected with
  * PARSECS_SLAVE_INDEX (see slave_identity.h).
+ *
+ * On the master, PE7 (TIMING_Pin) is high from the moment a GetRequest is
+ * queued until its GetResponse arrives or the request times out.
  */
 
 #include "demo_task.h"
@@ -16,7 +19,7 @@
 #include <stdint.h>
 
 #include "main.h"
-#include "usbd_cdc_if.h"
+#include "log.h"
 #include "PARSECS_Protocol_Interface.h"
 #include <ber.h>
 
@@ -28,7 +31,6 @@
 #endif
 
 #define LED_HEARTBEAT_Pin        LD4_Pin
-#define LED_WARNING_Pin          LD3_Pin
 #define DEMO_TYPE_ID             0x01U
 #define DEMO_COMM_VALUE          42
 #define DEMO_MOBILITY_VALUE      43
@@ -57,21 +59,31 @@ typedef enum {
 
 static demo_phase_t phase = DEMO_GET_COMM;
 static uint16_t phase_ticks = 0U;
+static uint32_t request_tick = 0U;
 #else
 static bool request_seen = false;
 #endif
 
+/* Shares LOG_SERIAL's static buffer and its wait for the previous CDC transfer,
+ * so demo lines and stack logs do not overwrite each other in flight. */
 static void usb_print(const char *msg)
 {
-	if (CDC_Transmit_FS((uint8_t *)msg, (uint16_t)strlen(msg)) == USBD_BUSY)
-	{
-		HAL_GPIO_TogglePin(GPIOD, LED_WARNING_Pin);
-	}
+	LOG_SERIAL("%s", msg);
 }
 
 void DemoTask_Init(void)
 {
 #ifdef SPI_MASTER
+	GPIO_InitTypeDef gpio = {0};
+
+	__HAL_RCC_GPIOE_CLK_ENABLE();
+	HAL_GPIO_WritePin(TIMING_GPIO_Port, TIMING_Pin, GPIO_PIN_RESET);
+	gpio.Pin = TIMING_Pin;
+	gpio.Mode = GPIO_MODE_OUTPUT_PP;
+	gpio.Pull = GPIO_NOPULL;
+	gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+	HAL_GPIO_Init(TIMING_GPIO_Port, &gpio);
+
 	phase = DEMO_GET_COMM;
 	phase_ticks = 0U;
 #else
@@ -104,6 +116,8 @@ static bool send_get(PARSECS_APP_BOARD_ADDRESS board, const char *name)
 	{
 		return false;
 	}
+	HAL_GPIO_WritePin(TIMING_GPIO_Port, TIMING_Pin, GPIO_PIN_SET);
+	request_tick = HAL_GetTick();
 	snprintf(line, sizeof(line), "%s %s queued GetRequest TypeID=0x%02X\n",
 	         ROLE_TAG, name, (unsigned)DEMO_TYPE_ID);
 	usb_print(line);
@@ -139,21 +153,24 @@ static void wait_response(PARSECS_APP_BOARD_ADDRESS board, const char *name,
 	{
 		int8_t value = 0;
 		uint32_t idx = 0U;
+		uint32_t rtt;
 		bool pass;
 
+		HAL_GPIO_WritePin(TIMING_GPIO_Port, TIMING_Pin, GPIO_PIN_RESET);
+		rtt = HAL_GetTick() - request_tick;
 		if (BERIntegerDecode(&value, ber_rx, &idx, ber_len) == true)
 		{
 			pass = (value == (int8_t)expected);
 			snprintf(line, sizeof(line),
-			         "%s %s rx GetResponse TypeID=0x%02X value=%d %s\n",
+			         "%s %s rx GetResponse TypeID=0x%02X value=%d rtt=%lums %s\n",
 			         ROLE_TAG, name, (unsigned)type, (int)value,
-			         pass ? "PASS" : "FAIL");
+			         (unsigned long)rtt, pass ? "PASS" : "FAIL");
 		}
 		else
 		{
 			snprintf(line, sizeof(line),
-			         "%s %s rx GetResponse TypeID=0x%02X BER decode FAIL\n",
-			         ROLE_TAG, name, (unsigned)type);
+			         "%s %s rx GetResponse TypeID=0x%02X rtt=%lums BER decode FAIL\n",
+			         ROLE_TAG, name, (unsigned)type, (unsigned long)rtt);
 		}
 		usb_print(line);
 		HAL_GPIO_TogglePin(GPIOD, LED_HEARTBEAT_Pin);
@@ -164,6 +181,7 @@ static void wait_response(PARSECS_APP_BOARD_ADDRESS board, const char *name,
 
 	if (phase_ticks >= DEMO_RESPONSE_TIMEOUT_MS)
 	{
+		HAL_GPIO_WritePin(TIMING_GPIO_Port, TIMING_Pin, GPIO_PIN_RESET);
 		snprintf(line, sizeof(line), "%s %s GetResponse timeout FAIL\n",
 		         ROLE_TAG, name);
 		usb_print(line);

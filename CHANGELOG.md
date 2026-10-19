@@ -1,5 +1,26 @@
 # Changelog
 
+## feature/debug-logs-roundtrip-timing
+
+- Turned on the High Level layer logs that were already in the stack, ported
+  from `coretx_commboard` / `coretx-motherboard`: L3 raw `I2C ->/<-`, L4 WIT
+  `I2C_WIT ->/<-` and protocol errors, and L7 `I2C USER ->/<-`. The debug
+  flags and log tags are renamed from `SPI_*` to `I2C_*`.
+  `I2C_PROTOCOL_DEBUG` is defined in `PARSECS_Debug.h`, and each sub-flag can be
+  switched on its own. `I2C_PROTOCOL_USER_FULL_BER_DEBUG` stays off.
+- `LOG_SERIAL` is now real (`PARSECS/log.c`, based on the coretx `log.c`). It
+  writes to USB CDC and does not initialise USB a second time. Before reusing
+  its buffer it waits up to `LOG_TX_TIMEOUT_MS` (10 ms) for the previous
+  transfer to finish. If the wait runs out, or USB is not enumerated yet, the
+  message is dropped and LD3 toggles. The demo's `usb_print` now goes through
+  `LOG_SERIAL` as well, because before it passed a stack buffer to
+  `CDC_Transmit_FS`.
+- Master round-trip probe on PE7 (`TIMING_Pin`): it goes high when a
+  GetRequest is queued and low when the GetResponse arrives or the request
+  times out. The PASS/FAIL line also prints `rtt=<ms>` from `HAL_GetTick`.
+  Logging runs in the same task, so with `I2C_PROTOCOL_DEBUG` on the pulse
+  includes the USB waits. Comment it out for clean timing.
+
 ## feature/dual-slave-get-loop
 
 - Second I2C peer: master `MAX_BOARD_COUNT` is 2. Comm stays `0x08` /

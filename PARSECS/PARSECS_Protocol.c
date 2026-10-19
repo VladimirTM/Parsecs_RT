@@ -504,18 +504,18 @@ int8_t PARSECS_Protocol_Reception_Handler(PARSECS_PROTOCOL_Descriptor_Type* prot
 {
 	int8_t status = 0;	
 	status = SPI_WIT_PDU_Decode(&protocolDescriptor->ReceivePDU, communicationInterface->receive_raw_data_buffer, communicationInterface->receive_data_size);	
-	#ifdef SPI_PROTOCOL_DEBUG
-	#ifdef SPI_PROTOCOL_WIT_DEBUG
-	LOG_SERIAL ("SPI_WIT <- ");	
+	#ifdef I2C_PROTOCOL_DEBUG
+	#ifdef I2C_PROTOCOL_WIT_DEBUG
+	LOG_SERIAL ("I2C_WIT <- ");	
 	SPI_WIT_PDU_PrintPacket(&protocolDescriptor->ReceivePDU);
 	LOG_SERIAL ("\n");
 	#endif
 	#endif
 	if (status != PARSECS_PROTOCOL_OK)
 	{
-		#ifdef SPI_PROTOCOL_DEBUG
-		#ifdef SPI_PROTOCOL_ERROR_DEBUG
-		LOG_SERIAL ("SPI :: ");
+		#ifdef I2C_PROTOCOL_DEBUG
+		#ifdef I2C_PROTOCOL_ERROR_DEBUG
+		LOG_SERIAL ("I2C :: ");
 		SPI_WIT_PrintError((PARSECS_PROTOCOL_STATUS)status);
 		#endif
 		#endif
@@ -530,9 +530,9 @@ int8_t PARSECS_Protocol_Reception_Handler(PARSECS_PROTOCOL_Descriptor_Type* prot
 		protocolDescriptor->Reception.WITDataLength = 0;	
 		protocolDescriptor->Reception.LastPduInMultipacket = false;
 		protocolDescriptor->Reception.resourceFree = true;
-		#ifdef SPI_PROTOCOL_DEBUG
-		#ifdef SPI_PROTOCOL_ERROR_DEBUG
-		LOG_SERIAL ("SPI :: ");
+		#ifdef I2C_PROTOCOL_DEBUG
+		#ifdef I2C_PROTOCOL_ERROR_DEBUG
+		LOG_SERIAL ("I2C :: ");
 		SPI_WIT_PrintError((PARSECS_PROTOCOL_STATUS)status);
 		#endif		
 		#endif
@@ -548,9 +548,9 @@ int8_t PARSECS_Protocol_Reception_Handler(PARSECS_PROTOCOL_Descriptor_Type* prot
 			protocolDescriptor->Reception.isInMultiPacketState = false;
 			protocolDescriptor->Reception.CurrentDataIndex = 0;
 			protocolDescriptor->Reception.WITDataLength = 0;
-			#ifdef SPI_PROTOCOL_DEBUG
-			#ifdef SPI_PROTOCOL_ERROR_DEBUG
-			LOG_SERIAL ("SPI :: ");
+			#ifdef I2C_PROTOCOL_DEBUG
+			#ifdef I2C_PROTOCOL_ERROR_DEBUG
+			LOG_SERIAL ("I2C :: ");
 			SPI_WIT_PrintError(PARSECS_PROTOCOL_ERROR_RECEIVED_SEGMENTATION_PARAMETERS);
 			#endif			
 			#endif
@@ -562,9 +562,9 @@ int8_t PARSECS_Protocol_Reception_Handler(PARSECS_PROTOCOL_Descriptor_Type* prot
 			protocolDescriptor->Reception.CurrentDataIndex = 0;
 			protocolDescriptor->Reception.WITDataLength = 0;
 			// !!!!!!! SIGNAL HIGHER LAYERS TO TRANSMIT A SIZE_EXCEEDED PACKET !!!!!!!!!!!!!! TBD		
-			#ifdef SPI_PROTOCOL_DEBUG
-			#ifdef SPI_PROTOCOL_ERROR_DEBUG
-			LOG_SERIAL ("SPI :: ");
+			#ifdef I2C_PROTOCOL_DEBUG
+			#ifdef I2C_PROTOCOL_ERROR_DEBUG
+			LOG_SERIAL ("I2C :: ");
 			SPI_WIT_PrintError(PARSECS_PROTOCOL_ERROR_SEGMENTATION_SIZE_EXCEEDED);
 			#endif				
 			#endif
@@ -583,9 +583,9 @@ int8_t PARSECS_Protocol_Reception_Handler(PARSECS_PROTOCOL_Descriptor_Type* prot
 
 			if (BERCheck(protocolDescriptor->Reception.WITData, &index2, protocolDescriptor->Reception.WITDataLength) == false)
 			{			
-				#ifdef SPI_PROTOCOL_DEBUG
-				#ifdef SPI_PROTOCOL_ERROR_DEBUG
-				LOG_SERIAL ("SPI :: ");
+				#ifdef I2C_PROTOCOL_DEBUG
+				#ifdef I2C_PROTOCOL_ERROR_DEBUG
+				LOG_SERIAL ("I2C :: ");
 				SPI_WIT_PrintError(PARSECS_PROTOCOL_ERROR_BER_DECODE_ERROR);
 				#endif		
 				#endif
@@ -593,9 +593,9 @@ int8_t PARSECS_Protocol_Reception_Handler(PARSECS_PROTOCOL_Descriptor_Type* prot
 			}
 			if (index2 != protocolDescriptor->Reception.WITDataLength)
 			{
-				#ifdef SPI_PROTOCOL_DEBUG
-				#ifdef SPI_PROTOCOL_ERROR_DEBUG
-				LOG_SERIAL ("SPI :: ");
+				#ifdef I2C_PROTOCOL_DEBUG
+				#ifdef I2C_PROTOCOL_ERROR_DEBUG
+				LOG_SERIAL ("I2C :: ");
 				SPI_WIT_PrintError(PARSECS_PROTOCOL_ERROR_BER_ADDITION_JUNK_FOUND);
 				#endif						
 				#endif
@@ -628,9 +628,9 @@ int8_t PARSECS_Protocol_Reception_Handler(PARSECS_PROTOCOL_Descriptor_Type* prot
 			}
 			if (index != protocolDescriptor->Reception.WITDataLength)
 			{
-				#ifdef SPI_PROTOCOL_DEBUG
-				#ifdef SPI_PROTOCOL_ERROR_DEBUG
-				LOG_SERIAL ("SPI :: ");
+				#ifdef I2C_PROTOCOL_DEBUG
+				#ifdef I2C_PROTOCOL_ERROR_DEBUG
+				LOG_SERIAL ("I2C :: ");
 				SPI_WIT_PrintError(PARSECS_PROTOCOL_ERROR_BER_ADDITION_JUNK_FOUND);
 				#endif						
 				#endif
@@ -645,9 +645,9 @@ int8_t PARSECS_Protocol_Reception_Handler(PARSECS_PROTOCOL_Descriptor_Type* prot
 			// beginning multipacket reception
 			if (protocolDescriptor->ReceivePDU.TotalPDUPackets == 1)
 			{
-				#ifdef SPI_PROTOCOL_DEBUG
-				#ifdef SPI_PROTOCOL_ERROR_DEBUG
-				LOG_SERIAL ("SPI :: ");
+				#ifdef I2C_PROTOCOL_DEBUG
+				#ifdef I2C_PROTOCOL_ERROR_DEBUG
+				LOG_SERIAL ("I2C :: ");
 				SPI_WIT_PrintError(PARSECS_PROTOCOL_ERROR_RECEIVED_SEGMENTATION_PARAMETERS);
 				#endif					
 				#endif
@@ -655,9 +655,9 @@ int8_t PARSECS_Protocol_Reception_Handler(PARSECS_PROTOCOL_Descriptor_Type* prot
 			}			
 			if (protocolDescriptor->ReceivePDU.LastPduInMultipacket == true)
 			{
-				#ifdef SPI_PROTOCOL_DEBUG
-				#ifdef SPI_PROTOCOL_ERROR_DEBUG
-				LOG_SERIAL ("SPI :: ");
+				#ifdef I2C_PROTOCOL_DEBUG
+				#ifdef I2C_PROTOCOL_ERROR_DEBUG
+				LOG_SERIAL ("I2C :: ");
 				SPI_WIT_PrintError(PARSECS_PROTOCOL_ERROR_RECEIVED_SEGMENTATION_PARAMETERS);
 				#endif					
 				#endif
@@ -665,9 +665,9 @@ int8_t PARSECS_Protocol_Reception_Handler(PARSECS_PROTOCOL_Descriptor_Type* prot
 			}
 			if ((protocolDescriptor->ReceivePDU.CurentPDUPacket + 1) > protocolDescriptor->ReceivePDU.TotalPDUPackets)
 			{
-				#ifdef SPI_PROTOCOL_DEBUG
-				#ifdef SPI_PROTOCOL_ERROR_DEBUG 
-				LOG_SERIAL ("SPI :: ");
+				#ifdef I2C_PROTOCOL_DEBUG
+				#ifdef I2C_PROTOCOL_ERROR_DEBUG 
+				LOG_SERIAL ("I2C :: ");
 				SPI_WIT_PrintError(PARSECS_PROTOCOL_ERROR_RECEIVED_SEGMENTATION_PARAMETERS);
 				#endif
 				#endif
@@ -721,9 +721,9 @@ int8_t PARSECS_Protocol_Transmission_Handler(PARSECS_PROTOCOL_Descriptor_Type* p
 					protocolDescriptor->TransmitPDU.TotalPDUPackets = protocolDescriptor->Transmission.TotalPDUPackets;
 					protocolDescriptor->TransmitPDU.CurentPDUPacket = protocolDescriptor->Transmission.CurentPDUPacket;
 					protocolDescriptor->Transmission.resourceFree = true;
-					#ifdef SPI_PROTOCOL_DEBUG
-					#ifdef SPI_PROTOCOL_WIT_DEBUG
-					LOG_SERIAL ("SPI_WIT -> ");	
+					#ifdef I2C_PROTOCOL_DEBUG
+					#ifdef I2C_PROTOCOL_WIT_DEBUG
+					LOG_SERIAL ("I2C_WIT -> ");	
 					SPI_WIT_PDU_PrintPacket(&protocolDescriptor->TransmitPDU);
 					LOG_SERIAL ("\n");
 					#endif
@@ -742,9 +742,9 @@ int8_t PARSECS_Protocol_Transmission_Handler(PARSECS_PROTOCOL_Descriptor_Type* p
 					protocolDescriptor->TransmitPDU.TotalPDUPackets = protocolDescriptor->Transmission.TotalPDUPackets;
 					protocolDescriptor->TransmitPDU.PDUDataLength = PARSECS_WIT_PDU_DATA_SIZE;
 					protocolDescriptor->Transmission.CurentPDUPacket++;
-					#ifdef SPI_PROTOCOL_DEBUG
-					#ifdef SPI_PROTOCOL_WIT_DEBUG
-					LOG_SERIAL ("SPI_WIT -> ");	
+					#ifdef I2C_PROTOCOL_DEBUG
+					#ifdef I2C_PROTOCOL_WIT_DEBUG
+					LOG_SERIAL ("I2C_WIT -> ");	
 					SPI_WIT_PDU_PrintPacket(&protocolDescriptor->TransmitPDU);
 					LOG_SERIAL ("\n");
 					#endif
@@ -776,9 +776,9 @@ int8_t PARSECS_Protocol_Transmission_Handler(PARSECS_PROTOCOL_Descriptor_Type* p
 					protocolDescriptor->Transmission.CurrentDataIndex += PARSECS_WIT_PDU_DATA_SIZE;
 					protocolDescriptor->Transmission.CurentPDUPacket++;
 					protocolDescriptor->TransmitPDU.PDUDataLength = PARSECS_WIT_PDU_DATA_SIZE;	
-					#ifdef SPI_PROTOCOL_DEBUG
-					#ifdef SPI_PROTOCOL_WIT_DEBUG
-					LOG_SERIAL ("SPI_WIT -> ");	
+					#ifdef I2C_PROTOCOL_DEBUG
+					#ifdef I2C_PROTOCOL_WIT_DEBUG
+					LOG_SERIAL ("I2C_WIT -> ");	
 					SPI_WIT_PDU_PrintPacket(&protocolDescriptor->TransmitPDU);
 					LOG_SERIAL ("\n");
 					#endif				
@@ -795,9 +795,9 @@ int8_t PARSECS_Protocol_Transmission_Handler(PARSECS_PROTOCOL_Descriptor_Type* p
 					protocolDescriptor->Transmission.resourceFree = true;
 					memcpy(protocolDescriptor->TransmitPDU.PDUData, protocolDescriptor->Transmission.WITData, protocolDescriptor->Transmission.WITDataLength);
 					protocolDescriptor->TransmitPDU.PDUDataLength = protocolDescriptor->Transmission.WITDataLength;
-					#ifdef SPI_PROTOCOL_DEBUG
-					#ifdef SPI_PROTOCOL_WIT_DEBUG
-					LOG_SERIAL ("SPI_WIT -> ");	
+					#ifdef I2C_PROTOCOL_DEBUG
+					#ifdef I2C_PROTOCOL_WIT_DEBUG
+					LOG_SERIAL ("I2C_WIT -> ");	
 					SPI_WIT_PDU_PrintPacket(&protocolDescriptor->TransmitPDU);
 					LOG_SERIAL ("\n");
 					#endif												
@@ -833,9 +833,9 @@ int8_t PARSECS_Protocol_Handler(PARSECS_PROTOCOL_Descriptor_Type* protocolDescri
 			if (communicationInterface->receive_data_size > 0)
 			{
 				// new packet was really received
-				#ifdef SPI_PROTOCOL_DEBUG
-				#ifdef SPI_PROTOCOL_INFO_DEBUG
-				LOG_SERIAL ("SPI :: seq  TX - %d, RX - %d, ACK - %d, NACK - %d\n", communicationInterface->transmit_seq_number, communicationInterface->receive_seq_number, communicationInterface->last_ACKed_packet_sequence_number, communicationInterface->last_NACKed_packet_sequence_number); 	
+				#ifdef I2C_PROTOCOL_DEBUG
+				#ifdef I2C_PROTOCOL_INFO_DEBUG
+				LOG_SERIAL ("I2C :: seq  TX - %d, RX - %d, ACK - %d, NACK - %d\n", communicationInterface->transmit_seq_number, communicationInterface->receive_seq_number, communicationInterface->last_ACKed_packet_sequence_number, communicationInterface->last_NACKed_packet_sequence_number); 	
 				#endif				
 				#endif
 				PARSECS_Protocol_Reception_Handler(protocolDescriptor, communicationInterface);				
@@ -847,11 +847,11 @@ int8_t PARSECS_Protocol_Handler(PARSECS_PROTOCOL_Descriptor_Type* protocolDescri
 		case PARSECS_PROTOCOL_COMMAND_TRANSMIT_OPERATION_ONLY:
 		{
 			// transmission is possible if needed
-			#ifdef SPI_PROTOCOL_DEBUG
-			#ifdef SPI_PROTOCOL_INFO_DEBUG
+			#ifdef I2C_PROTOCOL_DEBUG
+			#ifdef I2C_PROTOCOL_INFO_DEBUG
 			if ((communicationInterface->transmit_data_size < 0) && (protocolDescriptor->Transmission.resourceFree == false))
 			{				
-				LOG_SERIAL ("SPI :: seq  TX - %d, RX - %d, ACK - %d, NACK - %d\n", communicationInterface->transmit_seq_number, communicationInterface->receive_seq_number, communicationInterface->last_ACKed_packet_sequence_number, communicationInterface->last_NACKed_packet_sequence_number); 								
+				LOG_SERIAL ("I2C :: seq  TX - %d, RX - %d, ACK - %d, NACK - %d\n", communicationInterface->transmit_seq_number, communicationInterface->receive_seq_number, communicationInterface->last_ACKed_packet_sequence_number, communicationInterface->last_NACKed_packet_sequence_number); 								
 			}
 			#endif
 			#endif				
@@ -889,9 +889,9 @@ int8_t PARSECS_Protocol_PresentationApplication_Layer_Receive_Handler(uint8_t* b
 	uint32_t index = 0;
 	uint16_t structureLength = 0;
 	uint8_t tempDecode = 0;
-//	#ifdef SPI_PROTOCOL_DEBUG
+//	#ifdef I2C_PROTOCOL_DEBUG
 //	uint32_t index2 = 0;
-//	LOG_SERIAL ("SPI_BER <- ");	
+//	LOG_SERIAL ("I2C_BER <- ");	
 //	BERPrintEncodedBufferAsBer(ber_data_buffer, &index2, ber_data_buffer_length);
 //	LOG_SERIAL ("\n");	
 //	#endif	
@@ -1015,8 +1015,8 @@ int8_t PARSECS_Protocol_PresentationApplication_Layer_Transmit_Handler(uint8_t* 
 	memcpy(&encoded_ber_data_buffer[index], ber_app_data_buffer, ber_app_data_buffer_length);
 	*encoded_ber_data_buffer_length = ber_app_data_buffer_length + index;
 	index = 0;
-//	#ifdef SPI_PROTOCOL_DEBUG
-//	LOG_SERIAL ("SPI_BER -> ");
+//	#ifdef I2C_PROTOCOL_DEBUG
+//	LOG_SERIAL ("I2C_BER -> ");
 //	BERPrintEncodedBufferAsBer(encoded_ber_data_buffer, &index, *encoded_ber_data_buffer_length);
 //	LOG_SERIAL ("\n");
 //	#endif

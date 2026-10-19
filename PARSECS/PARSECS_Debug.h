@@ -9,24 +9,25 @@
 #define _PARSECS_Debug
 
 /*!
- * \def SPI_PROTOCOL_DEBUG
+ * \def I2C_PROTOCOL_DEBUG
  * This define enable de debug mode of the PARSECS Stack. This implies the activation of all the printing to stdout.
  * If this define is commented then no printing is done on stdout from the code of the PARSECS stack
  */
-/* Disabled on STM32: the Low Level Substack must not printf over USB/ITM. */
-/* #define SPI_PROTOCOL_DEBUG */
+/* Output goes to USB CDC through LOG_SERIAL (log.c). The prints run inside
+ * myTestTask, so comment this out for clean round-trip timing on PE7. */
+#define I2C_PROTOCOL_DEBUG
 
-#ifdef SPI_PROTOCOL_DEBUG
+#ifdef I2C_PROTOCOL_DEBUG
 
-#define SPI_PROTOCOL_LL_DEBUG
-#define SPI_PROTOCOL_INFO_DEBUG
-#define SPI_PROTOCOL_WIT_DEBUG
-#define SPI_PROTOCOL_USER_DEBUG
-#define SPI_PROTOCOL_ERROR_DEBUG
+#define I2C_PROTOCOL_LL_DEBUG
+#define I2C_PROTOCOL_INFO_DEBUG
+#define I2C_PROTOCOL_WIT_DEBUG
+#define I2C_PROTOCOL_USER_DEBUG
+#define I2C_PROTOCOL_ERROR_DEBUG
 
 
-#ifdef SPI_PROTOCOL_USER_DEBUG
-#define SPI_PROTOCOL_USER_FULL_BER_DEBUG
+#ifdef I2C_PROTOCOL_USER_DEBUG
+//#define I2C_PROTOCOL_USER_FULL_BER_DEBUG
 #endif
 
 
