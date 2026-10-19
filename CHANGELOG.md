@@ -10,7 +10,7 @@
   switched on its own. `I2C_PROTOCOL_USER_FULL_BER_DEBUG` stays off.
 - `LOG_SERIAL` is now real (`PARSECS/log.c`, based on the coretx `log.c`). It
   writes to USB CDC and does not initialise USB a second time.
-- `LOG_SERIAL` does not block. It formats the message into a 2048 B RAM ring
+- `LOG_SERIAL` does not block. It formats the message into an 8 KB RAM ring
   (`LOG_RING_SIZE`) and returns. A separate `logTask` (`LOG_TaskStart`,
   created in both `freertos.c`) sends the ring to CDC in chunks of up to
   `LOG_CHUNK_SIZE` bytes whenever the previous transfer has finished. Before
