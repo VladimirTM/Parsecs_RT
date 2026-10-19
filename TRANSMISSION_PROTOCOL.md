@@ -82,6 +82,10 @@ High Level sits on L3 DATA payloads:
   TypeID) plus the user OperationData.
 - L7 APP operations are Get/Set/Call request and response.
 
+`USER_Receive` also takes the size of the caller's data buffer and returns
+`PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED` (dropping the frame) when the
+OperationData does not fit. The demo passes `sizeof(ber_rx)`.
+
 `USER_Send` / `USER_Receive` take a board address that names the local High
 Level descriptor, not an I2C address:
 
@@ -114,16 +118,27 @@ twice with no-op select/deselect, then `PARSECS_Set_Slave_I2C_Address`
 (`0x08` comm, `0x09` mobility). The demo loops, retrying `USER_Send` until it
 returns `PARSECS_PROTOCOL_OK`:
 
-1. `GetRequest` to comm, TypeID `0x01`, BER Null, OperationControl `0xFF`.
-   Comm answers `GetResponse` BER integer `42`, `PARSECS_APP_Success`.
-2. The same request to mobility. Mobility answers `43`.
+1. `CallRequest` to comm, method TypeID `0xFE` (`DEMO_SEG_METHOD_ID`, same as
+   coretx `COMMBOARD_METHOD_TEST_SPI_COMMUNICATION`), OperationControl `0xFF`.
+   OperationData is `EncodeTestData`, ported from coretx: a BER structure of
+   17 elements, holding unsigned `15`, the 64-character string
+   `"Test String from motherboard for segmentation transmission !!   "` as an
+   octet string 15 times, then long unsigned `0xCACA`. That is 997 bytes of BER
+   and a 1010-byte WIT FRAME. L4 splits it into 5 WIT PDUs: 4 × 250 data bytes
+   plus a last PDU of 10.
+   The slave compares the payload with its own `EncodeTestData`. On a match it
+   echoes the payload in a `CallResponse` `PARSECS_APP_Success`, which is also
+   5 segments. Otherwise it answers `CallResponse` `PARSECS_APP_OtherReason`
+   with BER Null. The master checks `Success`, the length, and `memcmp`
+   against its copy.
+2. The same call to mobility.
 3. Settle 100 ms (`DEMO_SETTLE_MS`) with Layer 1 still running so the last
    ACK can leave the tx ring.
 4. Hold SCL then SDA low for 500 ms (`DEMO_BUS_HOLD_MS`), then release SDA
    then SCL and re-init I2C1.
 5. Repeat.
 
-A slave that does not answer within `DEMO_RESPONSE_TIMEOUT_MS` (2000 ms) is
+A slave that does not answer within `DEMO_RESPONSE_TIMEOUT_MS` (15000 ms) is
 logged `FAIL` and the cycle continues. Each slave image accepts another
 request after it has queued its response. `PARSECS_SLAVE_INDEX` 0 is comm;
 1 is mobility. Flash the slave project once per index.
@@ -131,18 +146,21 @@ request after it has queued its response. `PARSECS_SLAVE_INDEX` 0 is comm;
 Expected USB CDC for one pass:
 
 ```
-[Master] comm queued GetRequest TypeID=0x01
-[Slave] comm rx GetRequest TypeID=0x01
-[Slave] comm queued GetResponse TypeID=0x01 value=42
-[Master] comm rx GetResponse TypeID=0x01 value=42 PASS
-[Master] mobility queued GetRequest TypeID=0x01
-[Slave] mobility rx GetRequest TypeID=0x01
-[Slave] mobility queued GetResponse TypeID=0x01 value=43
-[Master] mobility rx GetResponse TypeID=0x01 value=43 PASS
+[Master] comm queued CallRequest 0xFE ber=997 wit=1010
+[Slave] comm rx CallRequest 0xFE ber=997 match
+[Slave] comm queued CallResponse Success wit=...
+[Master] comm rx CallResponse ctrl=0 ber=997 rtt=...ms PASS
+[Master] mobility queued CallRequest 0xFE ber=997 wit=1010
+[Slave] mobility rx CallRequest 0xFE ber=997 match
+[Slave] mobility queued CallResponse Success wit=...
+[Master] mobility rx CallResponse ctrl=0 ber=997 rtt=...ms PASS
 [Master] holding SCL and SDA low
 ```
 
-The two slave lines come from the two slave boards, not from one log.
+The two slave lines come from the two slave boards, not from one log. With
+`I2C_PROTOCOL_DEBUG` on, the stack logs are interleaved with these lines. Each
+direction shows `I2C_WIT -> ... Total:   5 Current:   1..5`, and only the last
+PDU has the `LastPduInMultipacket` flag (`F F T T`).
 
 Saleae still shows L2 `7E … 8C` DATA (WIT PDU + BER, not ASCII PING) then L3
 ACK `7E 00 xx 7C …`. Leading/trailing `00` bytes are L1 dummy. Dummy `0x00` L1
@@ -178,8 +196,8 @@ to the next, is in [SALEAE.md](SALEAE.md).
 | `SPI_DATA_LENGTH` | 254 | max L2 DATA payload |
 | `MAX_BOARD_COUNT` | 2 / 1 | master peers / one descriptor on a slave |
 | `PARSECS_WIT_FRAME_LENGTH` | 1024 | L4 assembled WIT FRAME |
-| Demo TypeID | `0x01` | GetRequest / GetResponse |
-| Demo values | `42`, `43` | comm, mobility BER integers |
+| `DEMO_SEG_METHOD_ID` | `0xFE` | CallRequest / CallResponse method |
+| `DEMO_SEG_REPEAT` | 15 | test string repetitions in `EncodeTestData` |
 | `DEMO_SETTLE_MS` | 100 | ACK drain before the bus is held |
 | `DEMO_BUS_HOLD_MS` | 500 | SCL and SDA held low between repeats |
-| `DEMO_RESPONSE_TIMEOUT_MS` | 2000 | per-slave wait before FAIL |
+| `DEMO_RESPONSE_TIMEOUT_MS` | 15000 | per-slave wait before FAIL |
