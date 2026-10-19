@@ -1,5 +1,22 @@
 # Changelog
 
+## feature/segmentation-test
+
+- The demo now runs a segmentation test in place of the Get loop. The master
+  sends `CallRequest` method `0xFE` with `EncodeTestData`, ported from coretx
+  `brapi_cb.c` / `app_spi_dispatcher.c`: 997 bytes of BER, a 1010-byte WIT
+  FRAME, 5 WIT PDUs. It goes to comm, then mobility.
+- Each slave compares the payload with its own `EncodeTestData` and echoes it
+  in a `CallResponse` `Success`. On a mismatch it answers `OtherReason` with
+  BER Null. The master prints PASS when the echo matches byte for byte.
+- `ber_rx` and the expected payload are static 1024-byte buffers
+  (`PARSECS_WIT_FRAME_LENGTH`), passed to `USER_Receive` with their size.
+- `DEMO_RESPONSE_TIMEOUT_MS` raised to 15000 ms. PE7 and `rtt` now measure the
+  segmented round-trip.
+- Rebased on `main` after the debug-logs merge: runs over the I2C fixes and
+  the Layer 3 ARQ, and the demo lines keep the
+  ` link=UP|DOWN retx=N dropped=N` suffix of the node that logs them.
+
 ## feature/debug-logs-roundtrip-timing
 
 - Turned on the High Level layer logs that were already in the stack, ported

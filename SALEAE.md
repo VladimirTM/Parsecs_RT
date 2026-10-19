@@ -33,6 +33,10 @@ prints it as `rtt=<ms>`, with 1 ms resolution. Logging is asynchronous
 printed. With `I2C_PROTOCOL_DEBUG` on, the pulse only adds the time to format
 the log lines.
 
+On `feature/segmentation-test` the pulse covers a segmented `CallRequest`
+`0xFE` and its echoed `CallResponse` (5 WIT PDUs each way), and the timeout is
+15 s. The GetRequest frame walkthrough below applies to the Get loop on `main`.
+
 ## Recovery from a stuck bus
 
 The first round starts 100 ms after the master's reset (`L1_STARTUP_MS`). If a
