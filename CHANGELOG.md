@@ -24,6 +24,19 @@
   times out. The PASS/FAIL line also prints `rtt=<ms>` from `HAL_GetTick`.
   With `I2C_PROTOCOL_DEBUG` on, the pulse only includes the time to format the
   log lines, not the USB transfers.
+- Layer 1 recovers from a stuck bus without a manual reset. At boot a stray
+  START/STOP could make a slave hit a bus error. HAL then kept the handle in
+  `LISTEN`, so `HAL_I2C_EnableListen_IT` returned `HAL_BUSY` forever while the
+  peripheral still ACKed its address and held SCL low.
+  - Slave: `HAL_I2C_ErrorCallback` requests an immediate `i2c_resync()`. A
+    failed re-listen counts as an error. A watchdog resyncs when ADDR stays set,
+    or the handle stays in `BUSY_RX_LISTEN` / `BUSY_TX_LISTEN`, for more than
+    `SLAVE_STUCK_TICKS` (5 ms).
+  - Master: `i2c_resync()` runs `bus_recover()` between DeInit and Init. It
+    sends up to 9 SCL pulses until SDA is released, then a STOP. Layer 1 also
+    waits `L1_STARTUP_MS` (100 ms) after reset before the first round.
+  - Resync logs now print the HAL `ErrorCode`, e.g.
+    `[Slave]  L1 resync err=0x01` (0x01 BERR, 0x02 ARLO, 0x04 AF, 0x08 OVR).
 
 ## feature/dual-slave-get-loop
 
