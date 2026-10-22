@@ -1,5 +1,55 @@
 # Changelog
 
+## feature/debug-logs-roundtrip-timing
+
+- Turned on the High Level layer logs that were already in the stack, ported
+  from `coretx_commboard` / `coretx-motherboard`: L3 raw `I2C ->/<-`, L4 WIT
+  `I2C_WIT ->/<-` and protocol errors, and L7 `I2C USER ->/<-`. The debug
+  flags and log tags are renamed from `SPI_*` to `I2C_*`.
+  `I2C_PROTOCOL_DEBUG` is defined in `PARSECS_Debug.h`, and each sub-flag can be
+  switched on its own. `I2C_PROTOCOL_USER_FULL_BER_DEBUG` stays off.
+- `LOG_SERIAL` is now real (`PARSECS/log.c`, based on the coretx `log.c`). It
+  writes to USB CDC and does not initialise USB a second time.
+- `LOG_SERIAL` does not block. It formats the message into an 8 KB RAM ring
+  (`LOG_RING_SIZE`) and returns. A separate `logTask` (`LOG_TaskStart`,
+  created in both `freertos.c`) sends the ring to CDC in chunks of up to
+  `LOG_CHUNK_SIZE` bytes whenever the previous transfer has finished. Before
+  this, each log line could wait up to 10 ms for USB inside `myTestTask`, which
+  showed up on I2C as a ~70 ms pause at the start of every transaction. If the
+  ring is full (for example the COM port is not open), the message is dropped
+  and LD3 toggles. The demo's `usb_print` and the Layer 1 resync messages also
+  go through `LOG_SERIAL`, so nothing else writes to the CDC endpoint.
+- Master round-trip probe on PE7 (`TIMING_Pin`): it goes high when a
+  GetRequest is queued and low when the GetResponse arrives or the request
+  times out. The PASS/FAIL line also prints `rtt=<ms>` from `HAL_GetTick`.
+  With `I2C_PROTOCOL_DEBUG` on, the pulse only includes the time to format the
+  log lines, not the USB transfers.
+- Layer 1 recovers from a stuck bus without a manual reset. At boot a stray
+  START/STOP could make a slave hit a bus error. HAL then kept the handle in
+  `LISTEN`, so `HAL_I2C_EnableListen_IT` returned `HAL_BUSY` forever while the
+  peripheral still ACKed its address and held SCL low.
+  - Slave: `HAL_I2C_ErrorCallback` requests an immediate `i2c_resync()`. A
+    failed re-listen counts as an error. A watchdog resyncs when ADDR stays set,
+    or the handle stays in `BUSY_RX_LISTEN` / `BUSY_TX_LISTEN`, for more than
+    `SLAVE_STUCK_TICKS` (5 ms).
+  - Master: `i2c_resync()` runs `bus_recover()` between DeInit and Init. It
+    sends up to 9 SCL pulses until SDA is released, then a STOP. Layer 1 also
+    waits `L1_STARTUP_MS` (100 ms) after reset before the first round.
+  - Resync logs now print the HAL `ErrorCode`, e.g.
+    `[Slave]  L1 resync err=0x01` (0x01 BERR, 0x02 ARLO, 0x04 AF, 0x08 OVR).
+- `PARSECS_Protocol_USER_Receive` takes a new `GenericDataCapacity` argument
+  (the size of `GenericDataAsBER`), right after the buffer. Before, the
+  OperationData of a received frame was copied into the caller's buffer
+  without a length check, so a frame larger than the demo's 32-byte `ber_rx`
+  overwrote the memory after it. If the data does not fit, the call now
+  returns `PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED`, drops the frame and leaves the
+  buffer untouched. The demo passes `sizeof(ber_rx)`.
+- `PARSECS_Protocol_USER_Send` now counts the 13-14 byte presentation header
+  in the 1024-byte frame limit (`PARSECS_WIT_FRAME_LENGTH`). Before, the check
+  ran before the header was encoded, so payloads of 1011-1024 bytes were
+  accepted and wrote up to 14 bytes past `Transmission.WITData`. They now
+  return `PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED`.
+
 ## feature/dual-slave-get-loop
 
 - Second I2C peer: master `MAX_BOARD_COUNT` is 2. Comm stays `0x08` /
