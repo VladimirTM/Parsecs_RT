@@ -37,6 +37,13 @@
     waits `L1_STARTUP_MS` (100 ms) after reset before the first round.
   - Resync logs now print the HAL `ErrorCode`, e.g.
     `[Slave]  L1 resync err=0x01` (0x01 BERR, 0x02 ARLO, 0x04 AF, 0x08 OVR).
+- `PARSECS_Protocol_USER_Receive` takes a new `GenericDataCapacity` argument
+  (the size of `GenericDataAsBER`), right after the buffer. Before, the
+  OperationData of a received frame was copied into the caller's buffer
+  without a length check, so a frame larger than the demo's 32-byte `ber_rx`
+  overwrote the memory after it. If the data does not fit, the call now
+  returns `PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED`, drops the frame and leaves the
+  buffer untouched. The demo passes `sizeof(ber_rx)`.
 
 ## feature/dual-slave-get-loop
 

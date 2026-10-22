@@ -879,12 +879,14 @@ int8_t PARSECS_Protocol_Handler(PARSECS_PROTOCOL_Descriptor_Type* protocolDescri
 //! \param[out] OperationControl The decoded OperationControl field of the PARSECS_APP_API will be written into this parameter
 //! \param[out] TypeID The decoded TypeID field of the PARSECS_APP_API will be written into this parameter
 //! \param[out] ber_app_data_buffer The raw OperationData field encoded as BER will be written into this memory zone in order to be decoded further by the application layer
+//! \param ber_app_data_buffer_capacity The size in bytes of the memory zone designated as ber_app_data_buffer
 //! \param[out] ber_app_data_buffer_length The size of the data that was written into ber_app_data_buffer
 //! \return PARSECS_PROTOCOL_OK no error was found
 //! \return PARSECS_PROTOCOL_ERROR_INCORRECT_BER_FORMAT if a BER encoding error was found
 //! \return PARSECS_PROTOCOL_ERROR_INCORRECT_APP_PARAMETERS if the BER encoding was successful but the decoded data does not match the format of the PARSECS_WIT_FRAME and PARSECS_APP_API
+//! \return PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED if the OperationData field does not fit into ber_app_data_buffer_capacity bytes. Nothing is written into ber_app_data_buffer
 //! \private
-int8_t PARSECS_Protocol_PresentationApplication_Layer_Receive_Handler(uint8_t* ber_data_buffer, uint32_t ber_data_buffer_length, uint8_t *SourceAddress, uint8_t *DestinationAddress, PARSECS_APP_OperationType *OperationType, uint8_t *OperationControl, uint8_t *TypeID, uint8_t *ber_app_data_buffer, uint32_t *ber_app_data_buffer_length)
+int8_t PARSECS_Protocol_PresentationApplication_Layer_Receive_Handler(uint8_t* ber_data_buffer, uint32_t ber_data_buffer_length, uint8_t *SourceAddress, uint8_t *DestinationAddress, PARSECS_APP_OperationType *OperationType, uint8_t *OperationControl, uint8_t *TypeID, uint8_t *ber_app_data_buffer, uint32_t ber_app_data_buffer_capacity, uint32_t *ber_app_data_buffer_length)
 {
 	uint32_t index = 0;
 	uint16_t structureLength = 0;
@@ -953,6 +955,10 @@ int8_t PARSECS_Protocol_PresentationApplication_Layer_Receive_Handler(uint8_t* b
 		return PARSECS_PROTOCOL_ERROR_INCORRECT_BER_FORMAT;
 	}
 	*TypeID = tempDecode;
+	if ((ber_data_buffer_length - index) > ber_app_data_buffer_capacity)
+	{
+		return PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED;
+	}
 	memcpy(ber_app_data_buffer, &ber_data_buffer[index], ber_data_buffer_length - index);
 	*ber_app_data_buffer_length = ber_data_buffer_length - index;
 	

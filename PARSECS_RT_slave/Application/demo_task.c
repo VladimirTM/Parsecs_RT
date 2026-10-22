@@ -144,6 +144,7 @@ static void wait_response(PARSECS_APP_BOARD_ADDRESS board, const char *name,
 	                                      &ctrl,
 	                                      &type,
 	                                      ber_rx,
+	                                      sizeof(ber_rx),
 	                                      &ber_len);
 	if ((status == PARSECS_PROTOCOL_OK) &&
 	    (op == PARSECS_APP_GetResponse) &&
@@ -258,6 +259,7 @@ void MyDemoTask(void)
 		                                      &ctrl,
 		                                      &type,
 		                                      ber_rx,
+		                                      sizeof(ber_rx),
 		                                      &ber_len);
 		if (status != PARSECS_PROTOCOL_OK)
 		{

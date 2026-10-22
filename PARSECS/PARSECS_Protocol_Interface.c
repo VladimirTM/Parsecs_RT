@@ -269,12 +269,13 @@ int8_t PARSECS_Protocol_USER_Send(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_
 //! \param[out] OperationControl The OperationControl field of the received PARSECS_APP_API will be written into this parameter
 //! \param[out] TypeID The TypeID field of the received PARSECS_APP_API will be written into this parameter
 //! \param[out] GenericDataAsBER The he raw ber data of the OperationData field of the PARSECS_APP_API frame that was received will be written into this parameter
+//! \param GenericDataCapacity The size in bytes of the buffer designated as GenericDataAsBER
 //! \param[out] GenericDataLength The length of the data written into GenericDataAsBER
 //! \return PARSECS_PROTOCOL_OK The operation was succesfull and a PARSECS_APP_API was saved into the parameters of this function
 //! \return PARSECS_PROTOCOL_ERROR_NO_DATA This is not an actual error but a response that there is no available received PARSECS_APP_API frame to be returned
-//! \return
+//! \return PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED The OperationData field of the received frame does not fit into GenericDataCapacity bytes. The frame is dropped and GenericDataAsBER is not written
 //! \private
-int8_t PARSECS_Protocol_USER_Receive(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_t *SourceAddress, uint8_t *DestinationAddress, PARSECS_APP_OperationType *OperationType, uint8_t *OperationControl, uint8_t *TypeID, uint8_t *GenericDataAsBER, uint32_t *GenericDataLength)
+int8_t PARSECS_Protocol_USER_Receive(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_t *SourceAddress, uint8_t *DestinationAddress, PARSECS_APP_OperationType *OperationType, uint8_t *OperationControl, uint8_t *TypeID, uint8_t *GenericDataAsBER, uint32_t GenericDataCapacity, uint32_t *GenericDataLength)
 {
 	int32_t result = 0;
 	PARSECS_PROTOCOL_BOARD_DESCRIPTOR *board = PARSECS_BoardByAddress(boardAddress);
@@ -287,7 +288,7 @@ int8_t PARSECS_Protocol_USER_Receive(PARSECS_APP_BOARD_ADDRESS boardAddress, uin
 	if (board->boardProtocolDescriptor.Reception.resourceFree == false)
 	{
 		uint32_t length = 0;
-		result = PARSECS_Protocol_PresentationApplication_Layer_Receive_Handler(board->boardProtocolDescriptor.Reception.WITData, board->boardProtocolDescriptor.Reception.WITDataLength, SourceAddress, DestinationAddress, OperationType, OperationControl, TypeID, GenericDataAsBER, &length);
+		result = PARSECS_Protocol_PresentationApplication_Layer_Receive_Handler(board->boardProtocolDescriptor.Reception.WITData, board->boardProtocolDescriptor.Reception.WITDataLength, SourceAddress, DestinationAddress, OperationType, OperationControl, TypeID, GenericDataAsBER, GenericDataCapacity, &length);
 		if (result != PARSECS_PROTOCOL_OK)
 		{
 			#ifdef I2C_PROTOCOL_DEBUG
