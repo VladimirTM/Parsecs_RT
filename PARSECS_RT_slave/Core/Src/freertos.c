@@ -29,7 +29,6 @@
 #include <FreeRTOS_Helpers.h>
 #include "PARSECS_LowLevelTask.h"
 #include "PARSECS_HighLevelTask.h"
-#include "log.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,13 +48,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-/* Drains the LOG_SERIAL ring to USB CDC so logging never blocks myTestTask. */
-osThreadId_t logTaskHandle;
-const osThreadAttr_t logTask_attributes = {
-  .name = "logTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityLow,
-};
+
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -146,7 +139,7 @@ void MX_FREERTOS_Init(void) {
   myTestTaskHandle = osThreadNew(myTestTaskStart, NULL, &myTestTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  logTaskHandle = osThreadNew(LOG_TaskStart, NULL, &logTask_attributes);
+  /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
