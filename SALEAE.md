@@ -22,6 +22,26 @@ This picture is the first window after reset, so every DATA sequence number is
 
 After the release the bus sits idle-high until the first START.
 
+## Round-trip probe (PE7, master)
+
+Add a third channel on master PE7. It goes high right after the GetRequest is
+queued (`PARSECS_Protocol_USER_Send` returned OK) and low when the matching
+GetResponse is read, or when the 2 s timeout fires. Each window has two pulses,
+comm first, then mobility. Pulse width is the APP round-trip. The master also
+prints it as `rtt=<ms>`, with 1 ms resolution. Logging is asynchronous
+(`logTask` sends to USB), so I2C rounds keep running every 1 ms while logs are
+printed. With `I2C_PROTOCOL_DEBUG` on, the pulse only adds the time to format
+the log lines.
+
+## Recovery from a stuck bus
+
+The first round starts 100 ms after the master's reset (`L1_STARTUP_MS`). If a
+slave ever holds SCL low after an address ACK, it releases the line within
+about 5 ms (`SLAVE_STUCK_TICKS`) and prints `[Slave]  L1 resync ...`. If the
+master hits its 50 ms transaction timeout, its resync shows up as up to 9 slow
+SCL pulses (about 100 kHz) followed by a STOP, then normal polling resumes. If
+SDA is already high, only the STOP is sent.
+
 ## How each byte shows up
 
 Layer 1 never sends a repeated START. One "round" is two complete transactions,
