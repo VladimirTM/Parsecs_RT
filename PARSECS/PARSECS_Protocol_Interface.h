@@ -18,7 +18,7 @@
 
 #include "PARSECS_Protocol.h"
 
-int8_t PARSECS_Protocol_USER_Receive(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_t *SourceAddress, uint8_t *DestinationAddress, PARSECS_APP_OperationType *OperationType, uint8_t *OperationControl, uint8_t *TypeID, uint8_t *GenericDataAsBER, uint32_t GenericDataCapacity, uint32_t *GenericDataLength);
+int8_t PARSECS_Protocol_USER_Receive(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_t *SourceAddress, uint8_t *DestinationAddress, PARSECS_APP_OperationType *OperationType, uint8_t *OperationControl, uint8_t *TypeID, uint8_t *GenericDataAsBER, uint32_t *GenericDataLength);
 int8_t PARSECS_Protocol_USER_Send(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_t SourceAddress, uint8_t DestinationAddress, PARSECS_APP_OperationType OperationType, uint8_t OperationControl, uint8_t TypeID, const uint8_t *GenericDataAsBER, uint32_t GenericDataLength, uint32_t *resultedPacketSize);
 
 void PARSECS_Protocol_Interface_Task_Init(void);

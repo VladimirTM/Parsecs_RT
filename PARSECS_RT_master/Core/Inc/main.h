@@ -121,9 +121,6 @@ void Error_Handler(void);
 #define MEMS_INT2_GPIO_Port GPIOE
 
 /* USER CODE BEGIN Private defines */
-/* Round-trip timing probe: high from queued GetRequest to GetResponse/timeout. */
-#define TIMING_Pin GPIO_PIN_7
-#define TIMING_GPIO_Port GPIOE
 
 /* USER CODE END Private defines */
 
