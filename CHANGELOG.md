@@ -44,6 +44,11 @@
   overwrote the memory after it. If the data does not fit, the call now
   returns `PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED`, drops the frame and leaves the
   buffer untouched. The demo passes `sizeof(ber_rx)`.
+- `PARSECS_Protocol_USER_Send` now counts the 13-14 byte presentation header
+  in the 1024-byte frame limit (`PARSECS_WIT_FRAME_LENGTH`). Before, the check
+  ran before the header was encoded, so payloads of 1011-1024 bytes were
+  accepted and wrote up to 14 bytes past `Transmission.WITData`. They now
+  return `PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED`.
 
 ## feature/dual-slave-get-loop
 

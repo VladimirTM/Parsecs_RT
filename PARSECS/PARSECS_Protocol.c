@@ -975,6 +975,7 @@ int8_t PARSECS_Protocol_PresentationApplication_Layer_Receive_Handler(uint8_t* b
 //! \param TypeID The TypeID field of the PARSECS_WIT_FRAME to be encoded
 //! \param ber_app_data_buffer The raw data buffer of the OperationData field encoded as BER
 //! \param ber_app_data_buffer_length The length of the raw data buffer of the OperationData field encoded as BER
+//! \return PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED if the encoded header plus the OperationData field exceeds PARSECS_WIT_FRAME_LENGTH
 //! \private
 int8_t PARSECS_Protocol_PresentationApplication_Layer_Transmit_Handler(uint8_t* encoded_ber_data_buffer, uint32_t *encoded_ber_data_buffer_length, uint8_t SourceAddress, uint8_t DestinationAddress, PARSECS_APP_OperationType OperationType, uint8_t OperationControl, uint8_t TypeID, const uint8_t *ber_app_data_buffer, uint32_t ber_app_data_buffer_length)
 {
@@ -988,10 +989,6 @@ int8_t PARSECS_Protocol_PresentationApplication_Layer_Transmit_Handler(uint8_t* 
 	if (index2 != ber_app_data_buffer_length)
 	{
 		return PARSECS_PROTOCOL_ERROR_BER_ADDITION_JUNK_FOUND;
-	}
-	if ((ber_app_data_buffer_length + index) > PARSECS_WIT_FRAME_LENGTH)
-	{
-		return PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED;
 	}
 	if (SPI_WIT_ValidateAppOperationType(OperationType) == false)
 	{
@@ -1017,6 +1014,10 @@ int8_t PARSECS_Protocol_PresentationApplication_Layer_Transmit_Handler(uint8_t* 
 		BEREnumEncode(OperationControl, encoded_ber_data_buffer, &index);
 	}
 	BEREnumEncode(TypeID, encoded_ber_data_buffer, &index);
+	if ((ber_app_data_buffer_length + index) > PARSECS_WIT_FRAME_LENGTH)
+	{
+		return PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED;
+	}
 
 	memcpy(&encoded_ber_data_buffer[index], ber_app_data_buffer, ber_app_data_buffer_length);
 	*encoded_ber_data_buffer_length = ber_app_data_buffer_length + index;
