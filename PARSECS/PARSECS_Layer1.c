@@ -20,7 +20,7 @@
 
 #include "main.h"
 #include "i2c.h"
-#include "log.h"
+#include "usbd_cdc_if.h"
 
 #define DUMMY_BYTE                  0x00U
 #define MAX_CONSEC_ERRORS           10U
@@ -38,8 +38,6 @@ static inline void led_fault_on(void)  { HAL_GPIO_WritePin(GPIOD, LED_FAULT_Pin,
 static inline void led_fault_off(void) { HAL_GPIO_WritePin(GPIOD, LED_FAULT_Pin, GPIO_PIN_RESET); }
 
 static volatile uint16_t error_count = 0U;
-/* HAL ErrorCode of the most recent I2C error, printed with the resync logs. */
-static volatile uint32_t last_error = 0U;
 
 static void error_inc(void)
 {
@@ -55,11 +53,15 @@ static void error_reset(void)
 	PARSECS_IrqUnlock(key);
 }
 
-#ifdef SPI_MASTER
+static void usb_print(const char *msg)
+{
+	if (CDC_Transmit_FS((uint8_t *)msg, (uint16_t)strlen(msg)) == USBD_BUSY)
+	{
+		led_warn();
+	}
+}
 
-/* No rounds before this tick, so slaves powered up together are listening first. */
-#define L1_STARTUP_MS               100U
-#define BUS_RECOVER_PULSES          9U
+#ifdef SPI_MASTER
 
 typedef enum {
 	BUS_IDLE = 0,
@@ -107,6 +109,12 @@ static void i2c_restore(void)
 	bus_state = BUS_IDLE;
 }
 
+static void i2c_resync(void)
+{
+	i2c_quiesce();
+	i2c_restore();
+}
+
 /* Open-drain, driven to state. ODR is written before the mode switch so the
  * pin does not glitch the other way when it becomes an output. */
 static void bus_pin_output_od(uint16_t pin, GPIO_PinState state)
@@ -121,54 +129,6 @@ static void bus_pin_output_od(uint16_t pin, GPIO_PinState state)
 	gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
 	HAL_GPIO_Init(GPIOB, &gpio);
 	HAL_GPIO_WritePin(GPIOB, pin, state);
-}
-
-/* Roughly 5 us, so the recovery clock stays well under 100 kHz. */
-static void bus_delay(void)
-{
-	for (volatile uint32_t i = 0U; i < (SystemCoreClock / 1000000U); i++)
-	{
-	}
-}
-
-/* Clocks out a slave stuck in the middle of a byte, then sends a STOP.
- * Also clears the F4 erratum where a glitch leaves the BUSY flag locked. */
-static void bus_recover(void)
-{
-	uint8_t pulse;
-
-	bus_pin_output_od(GPIO_PIN_6, GPIO_PIN_SET);
-	bus_pin_output_od(GPIO_PIN_7, GPIO_PIN_SET);
-	bus_delay();
-
-	for (pulse = 0U; pulse < BUS_RECOVER_PULSES; pulse++)
-	{
-		if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_7) == GPIO_PIN_SET)
-		{
-			break;
-		}
-		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
-		bus_delay();
-		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
-		bus_delay();
-	}
-
-	/* SDA rising while SCL is high is the STOP. */
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
-	bus_delay();
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);
-	bus_delay();
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
-	bus_delay();
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);
-	bus_delay();
-}
-
-static void i2c_resync(void)
-{
-	i2c_quiesce();
-	bus_recover();
-	i2c_restore();
 }
 
 static void drive_lines_low(void)
@@ -245,7 +205,6 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 	if (hi2c->Instance != I2C1) return;
 
 	error_inc();
-	last_error = hi2c->ErrorCode;
 	bus_state = BUS_IDLE;
 }
 
@@ -304,7 +263,7 @@ void PARSECS_Layer1_ReleaseLines(void)
 
 void PARSECS_LAYER1(SLAVE *slave)
 {
-	if (hold_requested || (HAL_GetTick() < L1_STARTUP_MS))
+	if (hold_requested)
 	{
 		return;
 	}
@@ -317,7 +276,7 @@ void PARSECS_LAYER1(SLAVE *slave)
 			led_fault_on();
 			error_inc();
 			wait_ticks = 0U;
-			LOG_SERIAL("[Master] L1 resync (timeout) err=0x%02lX\n", (unsigned long)last_error);
+			usb_print("[Master] L1 resync (timeout)\n");
 		}
 	}
 	else
@@ -336,7 +295,7 @@ void PARSECS_LAYER1(SLAVE *slave)
 		i2c_resync();
 		led_fault_on();
 		error_reset();
-		LOG_SERIAL("[Master] L1 I2C resync err=0x%02lX\n", (unsigned long)last_error);
+		usb_print("[Master] L1 I2C resync\n");
 	}
 }
 
@@ -344,13 +303,7 @@ void PARSECS_LAYER1(SLAVE *slave)
 
 typedef enum { PHASE_RECEIVE, PHASE_TRANSMIT } phase_t;
 
-/* Ticks the peripheral may sit with ADDR set or in a BUSY_*_LISTEN state.
- * A real 1-byte transfer takes about 50 us at 400 kHz. */
-#define SLAVE_STUCK_TICKS   5U
-
 static volatile bool listening = false;
-static volatile bool resync_requested = false;
-static uint16_t stuck_ticks = 0U;
 static volatile phase_t phase = PHASE_RECEIVE;
 static volatile uint8_t rx_byte_val;
 static volatile uint8_t tx_byte_val;
@@ -383,20 +336,8 @@ static void i2c_resync(void)
 
 	MX_I2C1_Init();
 	listening = false;
-	resync_requested = false;
-	stuck_ticks = 0U;
 	error_reset();
 	phase = PHASE_RECEIVE;
-}
-
-/* After an error in listen mode HAL keeps State at LISTEN, so EnableListen_IT
- * returns HAL_BUSY, while the peripheral can still ACK its address and hold
- * SCL low with nobody clearing ADDR. */
-static bool slave_stuck(void)
-{
-	return (__HAL_I2C_GET_FLAG(&hi2c1, I2C_FLAG_ADDR) == SET) ||
-	       (hi2c1.State == HAL_I2C_STATE_BUSY_RX_LISTEN) ||
-	       (hi2c1.State == HAL_I2C_STATE_BUSY_TX_LISTEN);
 }
 
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
@@ -473,16 +414,12 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 	if (hi2c->Instance != I2C1) return;
 
 	error_inc();
-	last_error = hi2c->ErrorCode;
 	listening = false;
-	resync_requested = true;
 }
 
 void PARSECS_Layer1_Init(void)
 {
 	listening = false;
-	resync_requested = false;
-	stuck_ticks = 0U;
 	phase = PHASE_RECEIVE;
 	error_reset();
 	start_listen();
@@ -492,38 +429,15 @@ void PARSECS_LAYER1(SLAVE *slave)
 {
 	(void)slave;
 
-	if (resync_requested)
-	{
-		i2c_resync();
-		LOG_SERIAL("[Slave]  L1 resync err=0x%02lX\n", (unsigned long)last_error);
-	}
-
-	if (slave_stuck())
-	{
-		if (++stuck_ticks > SLAVE_STUCK_TICKS)
-		{
-			i2c_resync();
-			LOG_SERIAL("[Slave]  L1 resync (stuck) err=0x%02lX\n", (unsigned long)last_error);
-		}
-	}
-	else
-	{
-		stuck_ticks = 0U;
-	}
-
 	if (!listening)
 	{
 		start_listen();
-		if (!listening)
-		{
-			error_inc();
-		}
 	}
 
 	if (error_count >= MAX_CONSEC_ERRORS)
 	{
 		i2c_resync();
-		LOG_SERIAL("[Slave]  L1 I2C resync err=0x%02lX\n", (unsigned long)last_error);
+		usb_print("[Slave]  L1 I2C resync\n");
 	}
 }
 

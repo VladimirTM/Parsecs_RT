@@ -67,14 +67,14 @@ static PARSECS_PROTOCOL_BOARD_DESCRIPTOR *PARSECS_BoardByAddress(PARSECS_APP_BOA
 	return NULL;
 }
 
-#ifdef I2C_PROTOCOL_DEBUG
+#ifdef SPI_PROTOCOL_DEBUG
 #ifdef SPI_MASTER
-void I2C_Print_Raw_Packet(int8_t slave_id, uint8_t sequence_number, uint8_t size)
+void SPI_Print_Raw_Packet(int8_t slave_id, uint8_t sequence_number, uint8_t size)
 {	
 	LOG_SERIAL ("SLAVE %1d seq: %3d size: %3d", slave_id, sequence_number, size);	
 }
 #else
-void I2C_Print_Raw_Packet(uint8_t sequence_number, uint8_t size)
+void SPI_Print_Raw_Packet(uint8_t sequence_number, uint8_t size)
 {	
 	LOG_SERIAL ("MASTER seq: %3d size: %3d", sequence_number, size);		
 }
@@ -134,13 +134,13 @@ void PARSECS_Protocol_Interface_Task_Slave(PARSECS_PROTOCOL_BOARD_DESCRIPTOR *wi
 		
 		wit_board->boardProtocolInterface.command = PARSECS_PROTOCOL_COMMAND_IO_OPERATION; // set flag that it is a receive operation necessary and signaling that data may also be transmitted if necessary
 	
-		#ifdef I2C_PROTOCOL_DEBUG
-		#ifdef I2C_PROTOCOL_LL_DEBUG
-		LOG_SERIAL ("I2C <- ");
+		#ifdef SPI_PROTOCOL_DEBUG
+		#ifdef SPI_PROTOCOL_LL_DEBUG
+		LOG_SERIAL ("SPI <- ");
 		#ifdef SPI_MASTER
-		I2C_Print_Raw_Packet(wit_board->boardSlaveID, rx_seq_no, rx_data_length);				
+		SPI_Print_Raw_Packet(wit_board->boardSlaveID, rx_seq_no, rx_data_length);				
 		#else
-		I2C_Print_Raw_Packet(rx_seq_no, rx_data_length);
+		SPI_Print_Raw_Packet(rx_seq_no, rx_data_length);
 		#endif
 		LOG_SERIAL ("\n");
 		#endif
@@ -171,13 +171,13 @@ void PARSECS_Protocol_Interface_Task_Slave(PARSECS_PROTOCOL_BOARD_DESCRIPTOR *wi
 		//updating the transmission status variable for the upper levels
 		if (tx_status == 0) 
 		{			
-			#ifdef I2C_PROTOCOL_DEBUG
-			#ifdef I2C_PROTOCOL_LL_DEBUG
-			LOG_SERIAL ("I2C -> ");
+			#ifdef SPI_PROTOCOL_DEBUG
+			#ifdef SPI_PROTOCOL_LL_DEBUG
+			LOG_SERIAL ("SPI -> ");
 			#ifdef SPI_MASTER
-			I2C_Print_Raw_Packet(wit_board->boardSlaveID, tx_seq_no, tx_data_length);				
+			SPI_Print_Raw_Packet(wit_board->boardSlaveID, tx_seq_no, tx_data_length);				
 			#else
-			I2C_Print_Raw_Packet(tx_seq_no, tx_data_length);
+			SPI_Print_Raw_Packet(tx_seq_no, tx_data_length);
 			#endif
 			LOG_SERIAL ("\n");
 			#endif
@@ -187,7 +187,7 @@ void PARSECS_Protocol_Interface_Task_Slave(PARSECS_PROTOCOL_BOARD_DESCRIPTOR *wi
 		}
 		else
 		{
-			//LOG_SERIAL ("I2C :: Transmission status error - %d \n", tx_status);
+			//LOG_SERIAL ("SPI :: Transmission status error - %d \n", tx_status);
 //			commboard_protocol_interface.protocol_stack_transmit_confirmation = false;
 		}
 		PARSECS_Protocol_Handler(&(wit_board->boardProtocolDescriptor), &(wit_board->boardProtocolInterface)); // calling the upper levels to update the transmission status
@@ -220,10 +220,10 @@ int8_t PARSECS_Protocol_USER_Send(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_
 	if (board->boardProtocolDescriptor.Transmission.resourceFree == true)
 	{
 
-		#ifdef I2C_PROTOCOL_DEBUG
-		#ifdef I2C_PROTOCOL_USER_DEBUG
+		#ifdef SPI_PROTOCOL_DEBUG
+		#ifdef SPI_PROTOCOL_USER_DEBUG
 
-		LOG_SERIAL ("I2C USER -> ");
+		LOG_SERIAL ("SPI USER -> ");
 		LOG_SERIAL ("%02X - %02X ", SourceAddress, DestinationAddress);
 		SPI_WIT_PrintAppOperationType(OperationType);
 		LOG_SERIAL (" -");
@@ -233,7 +233,7 @@ int8_t PARSECS_Protocol_USER_Send(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_
 		}
 		LOG_SERIAL ("- Type: %02X Data: ", TypeID);
 		
-		#ifdef I2C_PROTOCOL_USER_FULL_BER_DEBUG
+		#ifdef SPI_PROTOCOL_USER_FULL_BER_DEBUG
 		uint32_t dummyIndex = 0;
 		BERPrintEncodedBufferAsBer(GenericDataAsBER, &dummyIndex ,GenericDataLength);
 		#endif
@@ -244,9 +244,9 @@ int8_t PARSECS_Protocol_USER_Send(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_
 		result = PARSECS_Protocol_PresentationApplication_Layer_Transmit_Handler(board->boardProtocolDescriptor.Transmission.WITData, &length, SourceAddress, DestinationAddress, OperationType, OperationControl, TypeID,  GenericDataAsBER, GenericDataLength);
 		if (result != PARSECS_PROTOCOL_OK)
 		{
-			#ifdef I2C_PROTOCOL_DEBUG
-			#ifdef I2C_PROTOCOL_ERROR_DEBUG
-			LOG_SERIAL ("I2C PRESENTATION :: ");
+			#ifdef SPI_PROTOCOL_DEBUG
+			#ifdef SPI_PROTOCOL_ERROR_DEBUG
+			LOG_SERIAL ("SPI PRESENTATION :: ");
 			SPI_WIT_PrintError((PARSECS_PROTOCOL_STATUS)result);
 			#endif		
 			#endif
@@ -269,13 +269,12 @@ int8_t PARSECS_Protocol_USER_Send(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_
 //! \param[out] OperationControl The OperationControl field of the received PARSECS_APP_API will be written into this parameter
 //! \param[out] TypeID The TypeID field of the received PARSECS_APP_API will be written into this parameter
 //! \param[out] GenericDataAsBER The he raw ber data of the OperationData field of the PARSECS_APP_API frame that was received will be written into this parameter
-//! \param GenericDataCapacity The size in bytes of the buffer designated as GenericDataAsBER
 //! \param[out] GenericDataLength The length of the data written into GenericDataAsBER
 //! \return PARSECS_PROTOCOL_OK The operation was succesfull and a PARSECS_APP_API was saved into the parameters of this function
 //! \return PARSECS_PROTOCOL_ERROR_NO_DATA This is not an actual error but a response that there is no available received PARSECS_APP_API frame to be returned
-//! \return PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED The OperationData field of the received frame does not fit into GenericDataCapacity bytes. The frame is dropped and GenericDataAsBER is not written
+//! \return
 //! \private
-int8_t PARSECS_Protocol_USER_Receive(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_t *SourceAddress, uint8_t *DestinationAddress, PARSECS_APP_OperationType *OperationType, uint8_t *OperationControl, uint8_t *TypeID, uint8_t *GenericDataAsBER, uint32_t GenericDataCapacity, uint32_t *GenericDataLength)
+int8_t PARSECS_Protocol_USER_Receive(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_t *SourceAddress, uint8_t *DestinationAddress, PARSECS_APP_OperationType *OperationType, uint8_t *OperationControl, uint8_t *TypeID, uint8_t *GenericDataAsBER, uint32_t *GenericDataLength)
 {
 	int32_t result = 0;
 	PARSECS_PROTOCOL_BOARD_DESCRIPTOR *board = PARSECS_BoardByAddress(boardAddress);
@@ -288,22 +287,22 @@ int8_t PARSECS_Protocol_USER_Receive(PARSECS_APP_BOARD_ADDRESS boardAddress, uin
 	if (board->boardProtocolDescriptor.Reception.resourceFree == false)
 	{
 		uint32_t length = 0;
-		result = PARSECS_Protocol_PresentationApplication_Layer_Receive_Handler(board->boardProtocolDescriptor.Reception.WITData, board->boardProtocolDescriptor.Reception.WITDataLength, SourceAddress, DestinationAddress, OperationType, OperationControl, TypeID, GenericDataAsBER, GenericDataCapacity, &length);
+		result = PARSECS_Protocol_PresentationApplication_Layer_Receive_Handler(board->boardProtocolDescriptor.Reception.WITData, board->boardProtocolDescriptor.Reception.WITDataLength, SourceAddress, DestinationAddress, OperationType, OperationControl, TypeID, GenericDataAsBER, &length);
 		if (result != PARSECS_PROTOCOL_OK)
 		{
-			#ifdef I2C_PROTOCOL_DEBUG
-			#ifdef I2C_PROTOCOL_ERROR_DEBUG
-			LOG_SERIAL ("I2C PRES :: ");
+			#ifdef SPI_PROTOCOL_DEBUG
+			#ifdef SPI_PROTOCOL_ERROR_DEBUG
+			LOG_SERIAL ("SPI PRES :: ");
 			SPI_WIT_PrintError((PARSECS_PROTOCOL_STATUS)result);
 			#endif
 			#endif
 			board->boardProtocolDescriptor.Reception.resourceFree = true;
 			return result;
 		}
-		#ifdef I2C_PROTOCOL_DEBUG
-		#ifdef I2C_PROTOCOL_USER_DEBUG
+		#ifdef SPI_PROTOCOL_DEBUG
+		#ifdef SPI_PROTOCOL_USER_DEBUG
 
-		LOG_SERIAL ("I2C USER <- ");
+		LOG_SERIAL ("SPI USER <- ");
 		LOG_SERIAL ("%02X - %02X ", *SourceAddress, *DestinationAddress);
 		SPI_WIT_PrintAppOperationType(*OperationType);
 		LOG_SERIAL (" -");
@@ -313,7 +312,7 @@ int8_t PARSECS_Protocol_USER_Receive(PARSECS_APP_BOARD_ADDRESS boardAddress, uin
 		}
 		LOG_SERIAL ("- Type: %02X Data: ", *TypeID);		
 
-		#ifdef I2C_PROTOCOL_USER_FULL_BER_DEBUG
+		#ifdef SPI_PROTOCOL_USER_FULL_BER_DEBUG
 		uint32_t dummyIndex = 0;
 		BERPrintEncodedBufferAsBer(GenericDataAsBER, &dummyIndex ,length);
 		#endif

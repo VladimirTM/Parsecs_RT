@@ -25,7 +25,7 @@ int8_t PARSECS_Protocol_Handler(PARSECS_PROTOCOL_Descriptor_Type* protocolDescri
 void PARSECS_ProtocolDescriptorInit(PARSECS_PROTOCOL_Descriptor_Type *protocolDescriptor);
 void PARSECS_ProtocolCommunicationInterfaceInit(PARSECS_Protocol_Communication_Interface *protocolCommunicationInterface);
 int8_t PARSECS_Protocol_PresentationApplication_Layer_Transmit_Handler(uint8_t* encoded_ber_data_buffer, uint32_t *encoded_ber_data_buffer_length, uint8_t SourceAddress, uint8_t DestinationAddress, PARSECS_APP_OperationType OperatinType, uint8_t OperationControl, uint8_t TypeID, const uint8_t *ber_app_data_buffer, uint32_t ber_app_data_buffer_length);
-int8_t PARSECS_Protocol_PresentationApplication_Layer_Receive_Handler(uint8_t* ber_data_buffer, uint32_t ber_data_buffer_length, uint8_t *SourceAddress, uint8_t *DestinationAddress, PARSECS_APP_OperationType *OperationType, uint8_t *OperationControl, uint8_t *TypeID, uint8_t *ber_app_data_buffer, uint32_t ber_app_data_buffer_capacity, uint32_t *ber_app_data_buffer_length);
+int8_t PARSECS_Protocol_PresentationApplication_Layer_Receive_Handler(uint8_t* ber_data_buffer, uint32_t ber_data_buffer_length, uint8_t *SourceAddress, uint8_t *DestinationAddress, PARSECS_APP_OperationType *OperationType, uint8_t *OperationControl, uint8_t *TypeID, uint8_t *ber_app_data_buffer, uint32_t *ber_app_data_buffer_length);
 
 void SPI_WIT_PrintError(PARSECS_PROTOCOL_STATUS error);
 void SPI_WIT_PDU_PrintPacket(PARSECS_WIT_PDU *pdu);
