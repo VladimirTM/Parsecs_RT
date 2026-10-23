@@ -2,7 +2,7 @@
 #define PARSECS_LOG_H
 
 /* Comment out to compile LOG_SERIAL to an empty function. */
-#define LOG_ENABLED
+/* #define LOG_ENABLED */
 
 /* Longest single formatted message. */
 #define LOG_BUFFER_SIZE     256U
