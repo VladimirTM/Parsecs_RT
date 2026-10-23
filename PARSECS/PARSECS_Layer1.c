@@ -70,6 +70,8 @@ typedef enum {
 static SLAVE *l1_active_slave = NULL;
 static uint16_t active_i2c_address = 0U;
 static volatile uint8_t tx_byte_val;
+/* tx_byte_val came from the TX ring and is consumed once the slave ACKs it. */
+static volatile bool tx_pending = false;
 static volatile uint8_t rx_byte_val;
 static volatile bus_state_t bus_state = BUS_IDLE;
 static uint16_t wait_ticks = 0U;
@@ -95,6 +97,7 @@ static void i2c_quiesce(void)
 
 	bus_state = BUS_IDLE;
 	l1_active_slave = NULL;
+	tx_pending = false;
 	wait_ticks = 0U;
 }
 
@@ -193,17 +196,15 @@ static void start_round(SLAVE *slave)
 
 	bus_state  = BUS_SENDING;
 	wait_ticks = 0U;
+	tx_pending = have_tx;
 	if (HAL_I2C_Master_Seq_Transmit_DMA(&hi2c1, active_i2c_address, (uint8_t *)&tx_byte_val, 1U,
 	                                     I2C_FIRST_AND_LAST_FRAME) == HAL_OK)
 	{
-		if (have_tx)
-		{
-			PARSECS_RingAdvanceRead(&slave->l1_buffer_tx, 1U);
-		}
 		led_activity();
 	}
 	else
 	{
+		tx_pending = false;
 		bus_state = BUS_IDLE;
 		error_inc();
 	}
@@ -212,6 +213,12 @@ static void start_round(SLAVE *slave)
 void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	if (hi2c->Instance != I2C1) return;
+
+	if (tx_pending && (l1_active_slave != NULL))
+	{
+		PARSECS_RingAdvanceRead(&l1_active_slave->l1_buffer_tx, 1U);
+	}
+	tx_pending = false;
 
 	bus_state = BUS_RECEIVING;
 	if (HAL_I2C_Master_Seq_Receive_DMA(hi2c, active_i2c_address, (uint8_t *)&rx_byte_val, 1U,
@@ -254,6 +261,7 @@ void PARSECS_Layer1_Init(void)
 	bus_state = BUS_IDLE;
 	l1_active_slave = NULL;
 	active_i2c_address = 0U;
+	tx_pending = false;
 	wait_ticks = 0U;
 	hold_requested = false;
 	hold_active = false;
@@ -354,10 +362,14 @@ static uint16_t stuck_ticks = 0U;
 static volatile phase_t phase = PHASE_RECEIVE;
 static volatile uint8_t rx_byte_val;
 static volatile uint8_t tx_byte_val;
+/* tx_byte_val came from the TX ring and is consumed once the master NACKs the
+ * end of the read, which is after the whole byte left the shift register. */
+static volatile bool tx_pending = false;
 
 static void start_listen(void)
 {
 	phase = PHASE_RECEIVE;
+	tx_pending = false;
 	listening = (HAL_I2C_EnableListen_IT(&hi2c1) == HAL_OK);
 }
 
@@ -384,6 +396,7 @@ static void i2c_resync(void)
 	MX_I2C1_Init();
 	listening = false;
 	resync_requested = false;
+	tx_pending = false;
 	stuck_ticks = 0U;
 	error_reset();
 	phase = PHASE_RECEIVE;
@@ -424,13 +437,11 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
 		if (HAL_I2C_Slave_Seq_Transmit_DMA(hi2c, (uint8_t *)&tx_byte_val, 1U,
 		                                    I2C_FIRST_AND_LAST_FRAME) == HAL_OK)
 		{
-			if (have_tx)
-			{
-				PARSECS_RingAdvanceRead(&slave->l1_buffer_tx, 1U);
-			}
+			tx_pending = have_tx;
 		}
 		else
 		{
+			tx_pending = false;
 			error_inc();
 			listening = false;
 		}
@@ -459,6 +470,11 @@ void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
 
 	if (phase == PHASE_TRANSMIT)
 	{
+		if (tx_pending)
+		{
+			PARSECS_RingAdvanceRead(&slaves[0].l1_buffer_tx, 1U);
+		}
+		tx_pending = false;
 		led_activity();
 		led_heartbeat();
 		led_fault_off();
@@ -482,6 +498,7 @@ void PARSECS_Layer1_Init(void)
 {
 	listening = false;
 	resync_requested = false;
+	tx_pending = false;
 	stuck_ticks = 0U;
 	phase = PHASE_RECEIVE;
 	error_reset();

@@ -49,6 +49,14 @@
   ran before the header was encoded, so payloads of 1011-1024 bytes were
   accepted and wrote up to 14 bytes past `Transmission.WITData`. They now
   return `PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED`.
+- Layer 1 removes a byte from the TX ring only after it has really been sent.
+  Before, both ends removed it as soon as the DMA transfer was started, so a
+  NACK, a bus error, the 50 ms timeout or a resync lost that byte for good and
+  the whole frame failed its CRC. The master now removes it in
+  `HAL_I2C_MasterTxCpltCallback` (the slave ACKed it). The slave removes it in
+  `HAL_I2C_ListenCpltCallback` after a read, which HAL calls when the master
+  NACKs the end of the byte. If the transfer fails, the byte stays in the ring
+  and is sent again on the next round.
 
 ## feature/dual-slave-get-loop
 
