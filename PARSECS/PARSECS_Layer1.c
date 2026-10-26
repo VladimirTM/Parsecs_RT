@@ -24,7 +24,9 @@
 
 #define DUMMY_BYTE                  0x00U
 #define MAX_CONSEC_ERRORS           10U
-#define TRANSACTION_TIMEOUT_TICKS   50U
+/* A write plus repeated-START read takes about 60 us, so 5 ticks (~5 ms) is a
+ * wide margin and keeps a hung round from adding 50 ms to the round trip. */
+#define TRANSACTION_TIMEOUT_TICKS   5U
 
 #define LED_HEARTBEAT_Pin   LD4_Pin     /* green  */
 #define LED_ACTIVITY_Pin    LD6_Pin     /* blue   */
@@ -217,6 +219,17 @@ static void start_round(SLAVE *slave)
 	if (!have_tx && PARSECS_RingFull(&slave->l1_buffer_rx))
 	{
 		return;
+	}
+
+	/* For a 1-byte DMA read HAL sets STOP twice: in I2C_Master_ADDR and again in
+	 * I2C_DMAXferCplt. If the first STOP is already on the bus, the second stays
+	 * pending and fires right after the next START, which leaves the master
+	 * without its SB event until the round times out. With BUSY clear nothing
+	 * is left to stop, so the bit can only be that stray request. */
+	if (((hi2c1.Instance->CR1 & I2C_CR1_STOP) != 0U) &&
+	    ((hi2c1.Instance->SR2 & I2C_SR2_BUSY) == 0U))
+	{
+		CLEAR_BIT(hi2c1.Instance->CR1, I2C_CR1_STOP);
 	}
 
 	tx_byte_val = have_tx ? PARSECS_RingPeekOne(&slave->l1_buffer_tx) : DUMMY_BYTE;

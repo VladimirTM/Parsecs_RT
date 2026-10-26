@@ -100,6 +100,15 @@
   - Layer 2 RX drops a frame in progress, and requests a NACK, after
     `L2_RX_IDLE_CALLS_MAX` (20) calls without a new byte, so a frame cut off
     by a resync or a bus hold does not swallow the start of the next one.
+- With the changes above, a 220 s capture had no ~1.9 s events: the active
+  part of a demo cycle was 330 ms median and 388 ms max. The remaining spread
+  came from ~0.4 hung rounds per second, each a START followed 0.4 us later by
+  a STOP and then 50 ms of silence until the round timeout. For a 1-byte DMA
+  read HAL sets STOP in `I2C_Master_ADDR` and again in `I2C_DMAXferCplt`; when
+  the first STOP has already gone out, the second stays pending in `CR1` and
+  fires right after the next START. `start_round` now clears a pending STOP
+  while `BUSY` is clear, and `TRANSACTION_TIMEOUT_TICKS` is 5 (~5 ms) instead
+  of 50 for any other hung round.
 
 ## feature/dual-slave-get-loop
 
