@@ -49,6 +49,19 @@
   ran before the header was encoded, so payloads of 1011-1024 bytes were
   accepted and wrote up to 14 bytes past `Transmission.WITData`. They now
   return `PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED`.
+- A stack overflow now stops the board. `configCHECK_FOR_STACK_OVERFLOW` was
+  already 1, but `vApplicationStackOverflowHook` in both `freertos.c` was
+  empty, so the kernel carried on with corrupted memory. The hook now disables
+  interrupts and flashes LD3-LD6 fast forever. `pcTaskName` names the task in
+  the debugger.
+- New `heartbeatTask` (1 KB stack, both boards) logs `heartbeat <n>` once per
+  second. At the 5th beat it logs the stack high-water marks once, in free
+  words: `stack free words: myTestTask=.. logTask=.. heartbeat=..`. By then
+  `myTestTask` has run several round trips, so with `I2C_PROTOCOL_DEBUG` on
+  this is the worst case.
+- `LOG_SERIAL` can be called from any task. It suspends the scheduler while
+  it formats into the shared `fmt_buf` and copies to the ring. Interrupts keep
+  running. It must still not be called from an ISR.
 
 ## feature/dual-slave-get-loop
 

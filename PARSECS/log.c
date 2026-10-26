@@ -36,8 +36,8 @@ static uint32_t ring_free(void)
 }
 #endif
 
-/* fmt_buf is shared, so LOG_SERIAL must only be called from task context
- * by one task at a time (today all callers run in myTestTask). */
+/* Task context only (not from ISRs). Any task may call it: the scheduler is
+ * suspended while the shared fmt_buf is in use. */
 void LOG_SERIAL(const char *format, ...)
 {
 #ifdef LOG_ENABLED
@@ -45,11 +45,13 @@ void LOG_SERIAL(const char *format, ...)
 	int len;
 	uint32_t first;
 
+	vTaskSuspendAll();
 	va_start(ap, format);
 	len = vsnprintf(fmt_buf, sizeof(fmt_buf), format, ap);
 	va_end(ap);
 	if (len <= 0)
 	{
+		(void)xTaskResumeAll();
 		return;
 	}
 	if ((size_t)len > (sizeof(fmt_buf) - 1U))
@@ -61,6 +63,7 @@ void LOG_SERIAL(const char *format, ...)
 	if (ring_free() < (uint32_t)len)
 	{
 		taskEXIT_CRITICAL();
+		(void)xTaskResumeAll();
 		HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
 		return;
 	}
@@ -73,6 +76,7 @@ void LOG_SERIAL(const char *format, ...)
 	memcpy(&log_ring[0], &fmt_buf[first], (uint32_t)len - first);
 	ring_head = (ring_head + (uint32_t)len) % LOG_RING_SIZE;
 	taskEXIT_CRITICAL();
+	(void)xTaskResumeAll();
 #else
 	(void)format;
 #endif

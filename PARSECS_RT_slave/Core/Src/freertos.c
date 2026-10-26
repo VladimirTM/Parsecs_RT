@@ -56,6 +56,13 @@ const osThreadAttr_t logTask_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
+/* Logs "heartbeat <n>" once per second. */
+osThreadId_t heartbeatTaskHandle;
+const osThreadAttr_t heartbeatTask_attributes = {
+  .name = "heartbeatTask",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -74,7 +81,7 @@ const osThreadAttr_t myTestTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-
+static void HeartbeatTaskStart(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -88,11 +95,22 @@ void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName);
 void vApplicationMallocFailedHook(void);
 
 /* USER CODE BEGIN 4 */
+/* Called by the kernel when a task overflows its stack. The system can no
+ * longer be trusted, so stop here and flash LD3-LD6 fast. SysTick is off with
+ * interrupts disabled, so the delay is a busy loop. pcTaskName names the task
+ * in the debugger. */
 void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName)
 {
-   /* Run time stack overflow checking is performed if
-   configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2. This hook function is
-   called if a stack overflow is detected. */
+  (void)xTask;
+  (void)pcTaskName;
+  __disable_irq();
+  for (;;)
+  {
+    HAL_GPIO_TogglePin(GPIOD, LD3_Pin | LD4_Pin | LD5_Pin | LD6_Pin);
+    for (volatile uint32_t i = 0U; i < 200000U; i++)
+    {
+    }
+  }
 }
 /* USER CODE END 4 */
 
@@ -147,6 +165,7 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_THREADS */
   logTaskHandle = osThreadNew(LOG_TaskStart, NULL, &logTask_attributes);
+  heartbeatTaskHandle = osThreadNew(HeartbeatTaskStart, NULL, &heartbeatTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -198,6 +217,26 @@ void myTestTaskStart(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
-
+/* After 5 s myTestTask has run several round trips, so the stack report
+ * reflects its deepest path (worst case with I2C_PROTOCOL_DEBUG on).
+ * Values are free stack in words (4 bytes). */
+static void HeartbeatTaskStart(void *argument)
+{
+  uint32_t count = 0U;
+  (void)argument;
+  for (;;)
+  {
+    osDelay(1000);
+    count++;
+    LOG_SERIAL("heartbeat %lu\n", (unsigned long)count);
+    if (count == 5U)
+    {
+      LOG_SERIAL("stack free words: myTestTask=%lu logTask=%lu heartbeat=%lu\n",
+                 (unsigned long)uxTaskGetStackHighWaterMark((TaskHandle_t)myTestTaskHandle),
+                 (unsigned long)uxTaskGetStackHighWaterMark((TaskHandle_t)logTaskHandle),
+                 (unsigned long)uxTaskGetStackHighWaterMark(NULL));
+    }
+  }
+}
 /* USER CODE END Application */
 
