@@ -232,6 +232,7 @@ int8_t PARSECS_Add_Slave(SPI_SLAVE_FUNCTION SelectFunctionPointer, SPI_SLAVE_FUN
 			slaves[i].current_seq_no = 0;
 			slaves[i].ub_L2_RecState = 0;
 			slaves[i].uw_L2_ByteCount0 = 0;
+			slaves[i].ub_L2_RecIdleCalls = 0;
 			slaves[i].STATUS_FLAG = 0;
 			slaves[i].last_received_packet_sequence_number = 0;
 			slaves[i].last_transmitted_data_packet_sequence_number = 0;

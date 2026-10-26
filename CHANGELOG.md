@@ -80,6 +80,26 @@
   `[Slave]  L1 resync (<error|stuck|errors>) err=.. sr1=.. sr2=.. st=.. scl=.. sda=..`.
   SR1: ADDR 0x0002, BTF 0x0004, TXE 0x0080, AF 0x0400. SR2: BUSY 0x0002,
   TRA 0x0004.
+- Fewer and shorter ~1.9 s round trips, still 1 byte per round. In a 300 s
+  logic-analyzer capture, about 10% of transactions were misframed (decoded
+  shifted by one bit, no START seen), mostly the read that started ~2 us after
+  the write's STOP. Twice the master stayed in that state for ~1.9 s, until
+  the 50 ms round timeout resynced it, because failures alternating with good
+  rounds never reached `MAX_CONSEC_ERRORS`.
+  - The master's write and read are one transaction with a repeated START
+    (`I2C_FIRST_FRAME` then `I2C_LAST_FRAME`) instead of STOP + START. The
+    STM32F40x repeated-START erratum only affects Standard mode at 88-100 kHz.
+  - The master resyncs when `ROUND_WINDOW_MAX_FAILS` (8) of the last 32 rounds
+    failed, at most once per `ROUND_WINDOW_HOLDOFF_MS` (250 ms). Log:
+    `[Master] L1 resync (window) err=..`.
+  - A TX byte leaves the ring only after it was transferred: on the master
+    when the slave ACKs it (`MasterTxCpltCallback`), on the slave when the
+    master's NACK ends the read (`ListenCpltCallback`). After a NACK or bus
+    error the same byte is sent again, so a resync no longer drops a byte from
+    the middle of a Layer 2 frame.
+  - Layer 2 RX drops a frame in progress, and requests a NACK, after
+    `L2_RX_IDLE_CALLS_MAX` (20) calls without a new byte, so a frame cut off
+    by a resync or a bus hold does not swallow the start of the next one.
 
 ## feature/dual-slave-get-loop
 

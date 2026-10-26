@@ -69,6 +69,13 @@ static void i2c_peripheral_reset(void)
 /* No rounds before this tick, so slaves powered up together are listening first. */
 #define L1_STARTUP_MS               100U
 #define BUS_RECOVER_PULSES          9U
+/* Resync when this many of the last 32 rounds failed. Failures that alternate
+ * with good rounds never reach MAX_CONSEC_ERRORS, and a master left in a bad
+ * state can produce them for seconds. About 5% of rounds fail normally. */
+#define ROUND_WINDOW_MAX_FAILS      8U
+/* Minimum time between two window resyncs. A slave that is not connected fails
+ * every one of its rounds, and a resync cannot fix that. */
+#define ROUND_WINDOW_HOLDOFF_MS     250U
 
 typedef enum {
 	BUS_IDLE = 0,
@@ -85,6 +92,18 @@ static uint16_t wait_ticks = 0U;
 static volatile bool hold_requested = false;
 static volatile bool hold_active = false;
 static uint16_t hold_wait = 0U;
+/* Bit 0 is the latest round, 1 = failed. */
+static volatile uint32_t round_history = 0U;
+/* tx_byte_val came from the TX ring and leaves it once the slave ACKs it. */
+static volatile bool tx_consume = false;
+static uint32_t window_resync_tick = 0U;
+
+static void round_done(bool failed)
+{
+	uint32_t key = PARSECS_IrqLock();
+	round_history = (round_history << 1) | (failed ? 1U : 0U);
+	PARSECS_IrqUnlock(key);
+}
 
 static void i2c_quiesce(void)
 {
@@ -105,6 +124,8 @@ static void i2c_quiesce(void)
 	bus_state = BUS_IDLE;
 	l1_active_slave = NULL;
 	wait_ticks = 0U;
+	tx_consume = false;
+	round_history = 0U;
 }
 
 static void i2c_restore(void)
@@ -199,36 +220,49 @@ static void start_round(SLAVE *slave)
 	}
 
 	tx_byte_val = have_tx ? PARSECS_RingPeekOne(&slave->l1_buffer_tx) : DUMMY_BYTE;
+	tx_consume = have_tx;
 	active_i2c_address = slave->i2c_address;
 
 	bus_state  = BUS_SENDING;
 	wait_ticks = 0U;
+	/* FIRST_FRAME: no STOP after the write, the read follows with a repeated
+	 * START. A STOP and a new START about 2 us later is where the master and
+	 * the slaves lost frame alignment. */
 	if (HAL_I2C_Master_Seq_Transmit_DMA(&hi2c1, active_i2c_address, (uint8_t *)&tx_byte_val, 1U,
-	                                     I2C_FIRST_AND_LAST_FRAME) == HAL_OK)
+	                                     I2C_FIRST_FRAME) == HAL_OK)
 	{
-		if (have_tx)
-		{
-			PARSECS_RingAdvanceRead(&slave->l1_buffer_tx, 1U);
-		}
 		led_activity();
 	}
 	else
 	{
 		bus_state = BUS_IDLE;
+		tx_consume = false;
 		error_inc();
+		round_done(true);
 	}
 }
 
+/* The slave ACKed the byte, so it leaves the TX ring. On a NACK or bus error
+ * it stays and is sent again next round. */
 void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	if (hi2c->Instance != I2C1) return;
 
+	if (tx_consume && (l1_active_slave != NULL))
+	{
+		PARSECS_RingAdvanceRead(&l1_active_slave->l1_buffer_tx, 1U);
+	}
+	tx_consume = false;
+
 	bus_state = BUS_RECEIVING;
 	if (HAL_I2C_Master_Seq_Receive_DMA(hi2c, active_i2c_address, (uint8_t *)&rx_byte_val, 1U,
-	                                    I2C_FIRST_AND_LAST_FRAME) != HAL_OK)
+	                                    I2C_LAST_FRAME) != HAL_OK)
 	{
+		/* No STOP was sent after the write, so release the bus here. */
+		SET_BIT(hi2c->Instance->CR1, I2C_CR1_STOP);
 		bus_state = BUS_IDLE;
 		error_inc();
+		round_done(true);
 	}
 }
 
@@ -248,6 +282,7 @@ void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
 	led_heartbeat();
 	led_fault_off();
 	error_reset();
+	round_done(false);
 }
 
 void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
@@ -255,7 +290,9 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 	if (hi2c->Instance != I2C1) return;
 
 	error_inc();
+	round_done(true);
 	last_error = hi2c->ErrorCode;
+	tx_consume = false;
 	bus_state = BUS_IDLE;
 }
 
@@ -268,6 +305,8 @@ void PARSECS_Layer1_Init(void)
 	hold_requested = false;
 	hold_active = false;
 	hold_wait = 0U;
+	round_history = 0U;
+	tx_consume = false;
 	error_reset();
 }
 
@@ -348,6 +387,15 @@ void PARSECS_LAYER1(SLAVE *slave)
 		error_reset();
 		LOG_SERIAL("[Master] L1 I2C resync err=0x%02lX\n", (unsigned long)last_error);
 	}
+	else if (((uint32_t)__builtin_popcount(round_history) >= ROUND_WINDOW_MAX_FAILS) &&
+	         ((HAL_GetTick() - window_resync_tick) >= ROUND_WINDOW_HOLDOFF_MS))
+	{
+		window_resync_tick = HAL_GetTick();
+		i2c_resync();
+		led_fault_on();
+		error_reset();
+		LOG_SERIAL("[Master] L1 resync (window) err=0x%02lX\n", (unsigned long)last_error);
+	}
 }
 
 #else /* slave */
@@ -366,6 +414,9 @@ static uint16_t stuck_ticks = 0U;
 static volatile phase_t phase = PHASE_RECEIVE;
 static volatile uint8_t rx_byte_val;
 static volatile uint8_t tx_byte_val;
+/* tx_byte_val came from the TX ring and leaves it once the master has clocked
+ * it out and NACKed it, which ends the read. On a bus error it stays. */
+static volatile bool tx_pending = false;
 
 static void start_listen(void)
 {
@@ -413,6 +464,7 @@ static void i2c_resync(const char *reason)
 	MX_I2C1_Init();
 	listening = false;
 	resync_requested = false;
+	tx_pending = false;
 	stuck_ticks = 0U;
 	error_reset();
 	phase = PHASE_RECEIVE;
@@ -482,16 +534,11 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
 		phase = PHASE_TRANSMIT;
 		bool have_tx = !PARSECS_RingEmpty(&slave->l1_buffer_tx);
 		tx_byte_val = have_tx ? PARSECS_RingPeekOne(&slave->l1_buffer_tx) : DUMMY_BYTE;
+		tx_pending = have_tx;
 		if (HAL_I2C_Slave_Seq_Transmit_DMA(hi2c, (uint8_t *)&tx_byte_val, 1U,
-		                                    I2C_FIRST_AND_LAST_FRAME) == HAL_OK)
+		                                    I2C_FIRST_AND_LAST_FRAME) != HAL_OK)
 		{
-			if (have_tx)
-			{
-				PARSECS_RingAdvanceRead(&slave->l1_buffer_tx, 1U);
-			}
-		}
-		else
-		{
+			tx_pending = false;
 			error_inc();
 			listening = false;
 		}
@@ -514,12 +561,19 @@ void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c)
 	if (hi2c->Instance != I2C1) return;
 }
 
+/* Called by the master's NACK after a read (I2C_Slave_AF) and again by the
+ * STOP that follows, so tx_pending is cleared on the first call. */
 void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	if (hi2c->Instance != I2C1) return;
 
 	if (phase == PHASE_TRANSMIT)
 	{
+		if (tx_pending)
+		{
+			PARSECS_RingAdvanceRead(&slaves[0].l1_buffer_tx, 1U);
+			tx_pending = false;
+		}
 		led_activity();
 		led_heartbeat();
 		led_fault_off();
@@ -535,6 +589,7 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 
 	error_inc();
 	last_error = hi2c->ErrorCode;
+	tx_pending = false;
 	listening = false;
 	resync_requested = true;
 }
@@ -543,6 +598,7 @@ void PARSECS_Layer1_Init(void)
 {
 	listening = false;
 	resync_requested = false;
+	tx_pending = false;
 	stuck_ticks = 0U;
 	phase = PHASE_RECEIVE;
 	error_reset();

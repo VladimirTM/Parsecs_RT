@@ -15,6 +15,12 @@
 #include "PARSECS_Layer2.h"
 #include "PARSECS_Port.h"
 
+/* While the bus works, Layer 1 delivers a byte (data or dummy) on almost every
+ * call. A frame that gets no byte for this many calls lost its tail to a resync
+ * or, on a slave, to the master's bus hold, and would otherwise swallow the
+ * start of the next frame. */
+#define L2_RX_IDLE_CALLS_MAX	20U
+
 //! The PARSECS Layer 2 transmit (TX) flow task implementation
 //!
 //! This function is used to implement the PARSECS Layer 2 transmission over the SPI bus
@@ -259,9 +265,28 @@ uint8_t PARSECS_RECEIVE_LAYER2_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet)
 //! \param slave A pointer to a SLAVE structure that identifies the slave that this task will be executed for
 //! \return None
 //! \private
+static void PARSECS_RECEIVE_LAYER2_WATCHDOG(SLAVE *slave)
+{
+	if ((slave->ub_L2_RecState == 0) || !PARSECS_RingEmpty(&slave->l1_buffer_rx))
+	{
+		slave->ub_L2_RecIdleCalls = 0;
+		return;
+	}
+	if (++slave->ub_L2_RecIdleCalls < L2_RX_IDLE_CALLS_MAX)
+	{
+		return;
+	}
+	slave->ub_L2_RecIdleCalls = 0;
+	slave->ub_L2_RecState = 0;
+	slave->spi_packet_rx_1.frame_in_progress = false;
+	slave->spi_packet_rx_2.frame_in_progress = false;
+	slave->STATUS_FLAG |= FG_NACK;
+}
+
 void PARSECS_RECEIVE_LAYER2(SLAVE *slave)
 {
 	uint8_t result = 0;
+	PARSECS_RECEIVE_LAYER2_WATCHDOG(slave);
 	if (slave->spi_packet_rx_1.frame_in_progress == true)
 	{
 		result = PARSECS_RECEIVE_LAYER2_PROCESS(slave, &slave->spi_packet_rx_1);

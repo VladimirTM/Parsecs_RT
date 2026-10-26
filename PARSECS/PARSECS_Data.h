@@ -175,6 +175,7 @@ typedef struct
 	volatile uint8_t ub_L2_TransState;  							/**<Layer 2 transmission state machine current state*/
 	uint16_t layer2_transmit_packet_index; 							/**<Layer 2 transmission data index*/
 	uint8_t uw_L2_ByteCount0;										/**<Layer 2 reception data index*/
+	uint8_t ub_L2_RecIdleCalls;										/**<Layer 2 reception calls in a row with a frame in progress and no new byte*/
 	bool slave_enabled;												/**<States if the slave structure is enabled, configured and valid*/
 	uint8_t buff_rx1[RAW_RING_BUFFER_SIZE];							/**<Layer 1 memory zone for ring buffer for rx*/
 	uint8_t buff_tx1[RAW_RING_BUFFER_SIZE];							/**<Layer 1 memory zone for ring buffer for tx*/
