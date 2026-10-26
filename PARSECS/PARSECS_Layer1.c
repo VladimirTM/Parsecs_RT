@@ -55,6 +55,15 @@ static void error_reset(void)
 	PARSECS_IrqUnlock(key);
 }
 
+/* Resets every I2C1 register from RCC. Part of the STM32F40x erratum
+ * workaround for a locked BUSY flag (ES0182), on top of the SWRST that
+ * HAL_I2C_Init already does. Call between HAL_I2C_DeInit and MX_I2C1_Init. */
+static void i2c_peripheral_reset(void)
+{
+	__HAL_RCC_I2C1_FORCE_RESET();
+	__HAL_RCC_I2C1_RELEASE_RESET();
+}
+
 #ifdef SPI_MASTER
 
 /* No rounds before this tick, so slaves powered up together are listening first. */
@@ -168,6 +177,7 @@ static void i2c_resync(void)
 {
 	i2c_quiesce();
 	bus_recover();
+	i2c_peripheral_reset();
 	i2c_restore();
 }
 
@@ -344,9 +354,11 @@ void PARSECS_LAYER1(SLAVE *slave)
 
 typedef enum { PHASE_RECEIVE, PHASE_TRANSMIT } phase_t;
 
-/* Ticks the peripheral may sit with ADDR set or in a BUSY_*_LISTEN state.
+/* Ticks slave_stuck() may stay true before a resync.
  * A real 1-byte transfer takes about 50 us at 400 kHz. */
 #define SLAVE_STUCK_TICKS   5U
+#define SLAVE_SCL_PIN       GPIO_PIN_6
+#define SLAVE_SDA_PIN       GPIO_PIN_7
 
 static volatile bool listening = false;
 static volatile bool resync_requested = false;
@@ -361,17 +373,34 @@ static void start_listen(void)
 	listening = (HAL_I2C_EnableListen_IT(&hi2c1) == HAL_OK);
 }
 
-static void i2c_resync(void)
+/* The registers and pin levels are captured before the reset so the log shows
+ * the state the slave was stuck in. */
+static void i2c_resync(const char *reason)
 {
+	uint32_t sr1;
+	uint32_t sr2;
+	uint32_t state;
+	uint32_t err;
+	unsigned int scl;
+	unsigned int sda;
+
 	HAL_NVIC_DisableIRQ(I2C1_EV_IRQn);
 	HAL_NVIC_DisableIRQ(I2C1_ER_IRQn);
 	HAL_NVIC_DisableIRQ(DMA1_Stream0_IRQn);
 	HAL_NVIC_DisableIRQ(DMA1_Stream6_IRQn);
 
+	sr1 = hi2c1.Instance->SR1;
+	sr2 = hi2c1.Instance->SR2;
+	state = (uint32_t)hi2c1.State;
+	err = last_error;
+	scl = (HAL_GPIO_ReadPin(GPIOB, SLAVE_SCL_PIN) == GPIO_PIN_SET) ? 1U : 0U;
+	sda = (HAL_GPIO_ReadPin(GPIOB, SLAVE_SDA_PIN) == GPIO_PIN_SET) ? 1U : 0U;
+
 	if (hi2c1.hdmarx != NULL) HAL_DMA_Abort(hi2c1.hdmarx);
 	if (hi2c1.hdmatx != NULL) HAL_DMA_Abort(hi2c1.hdmatx);
 
 	HAL_I2C_DeInit(&hi2c1);
+	i2c_peripheral_reset();
 	HAL_NVIC_ClearPendingIRQ(I2C1_EV_IRQn);
 	HAL_NVIC_ClearPendingIRQ(I2C1_ER_IRQn);
 	HAL_NVIC_ClearPendingIRQ(DMA1_Stream0_IRQn);
@@ -387,16 +416,48 @@ static void i2c_resync(void)
 	stuck_ticks = 0U;
 	error_reset();
 	phase = PHASE_RECEIVE;
+
+	LOG_SERIAL("[Slave]  L1 resync (%s) err=0x%02lX sr1=0x%04lX sr2=0x%04lX st=0x%02lX scl=%u sda=%u\n",
+	           reason, (unsigned long)err, (unsigned long)sr1, (unsigned long)sr2,
+	           (unsigned long)state, scl, sda);
 }
 
-/* After an error in listen mode HAL keeps State at LISTEN, so EnableListen_IT
- * returns HAL_BUSY, while the peripheral can still ACK its address and hold
- * SCL low with nobody clearing ADDR. */
+/* Any one of these held for SLAVE_STUCK_TICKS means the slave will not recover
+ * on its own:
+ * - ADDR set, or HAL in BUSY_*_LISTEN: after an error in listen mode HAL keeps
+ *   State at LISTEN, so EnableListen_IT returns HAL_BUSY while the peripheral
+ *   still ACKs its address and holds SCL low with nobody clearing ADDR.
+ * - BTF set: the master ACKed the last byte instead of NACKing it, so the slave
+ *   stretches SCL waiting for a DR write that the finished DMA never makes.
+ * - SCL low with SDA high: any other stretch that does not end. Both lines low
+ *   is the master holding the bus on purpose, so it does not count.
+ * - BUSY with both lines high: STM32F40x erratum (ES0182), a glitch on the
+ *   analog filter locks BUSY although the bus is free.
+ * SR2 is only read when SR1 showed ADDR clear: reading SR1 with ADDR set and
+ * then SR2 clears ADDR in hardware before the ISR has handled it. */
 static bool slave_stuck(void)
 {
-	return (__HAL_I2C_GET_FLAG(&hi2c1, I2C_FLAG_ADDR) == SET) ||
-	       (hi2c1.State == HAL_I2C_STATE_BUSY_RX_LISTEN) ||
-	       (hi2c1.State == HAL_I2C_STATE_BUSY_TX_LISTEN);
+	uint32_t sr1 = hi2c1.Instance->SR1;
+	bool scl;
+	bool sda;
+
+	if ((sr1 & (I2C_SR1_ADDR | I2C_SR1_BTF)) != 0U)
+	{
+		return true;
+	}
+	if ((hi2c1.State == HAL_I2C_STATE_BUSY_RX_LISTEN) ||
+	    (hi2c1.State == HAL_I2C_STATE_BUSY_TX_LISTEN))
+	{
+		return true;
+	}
+
+	scl = (HAL_GPIO_ReadPin(GPIOB, SLAVE_SCL_PIN) == GPIO_PIN_SET);
+	sda = (HAL_GPIO_ReadPin(GPIOB, SLAVE_SDA_PIN) == GPIO_PIN_SET);
+	if (!scl && sda)
+	{
+		return true;
+	}
+	return scl && sda && ((hi2c1.Instance->SR2 & I2C_SR2_BUSY) != 0U);
 }
 
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
@@ -494,16 +555,14 @@ void PARSECS_LAYER1(SLAVE *slave)
 
 	if (resync_requested)
 	{
-		i2c_resync();
-		LOG_SERIAL("[Slave]  L1 resync err=0x%02lX\n", (unsigned long)last_error);
+		i2c_resync("error");
 	}
 
 	if (slave_stuck())
 	{
 		if (++stuck_ticks > SLAVE_STUCK_TICKS)
 		{
-			i2c_resync();
-			LOG_SERIAL("[Slave]  L1 resync (stuck) err=0x%02lX\n", (unsigned long)last_error);
+			i2c_resync("stuck");
 		}
 	}
 	else
@@ -522,8 +581,7 @@ void PARSECS_LAYER1(SLAVE *slave)
 
 	if (error_count >= MAX_CONSEC_ERRORS)
 	{
-		i2c_resync();
-		LOG_SERIAL("[Slave]  L1 I2C resync err=0x%02lX\n", (unsigned long)last_error);
+		i2c_resync("errors");
 	}
 }
 

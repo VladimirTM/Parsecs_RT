@@ -62,6 +62,24 @@
 - `LOG_SERIAL` can be called from any task. It suspends the scheduler while
   it formats into the shared `fmt_buf` and copies to the ring. Interrupts keep
   running. It must still not be called from an ISR.
+- The slave recovers from a clock stretch that never ends. After a few
+  minutes of traffic a slave could hold SCL low forever. The master then saw
+  only AF (0x04) and resynced in a loop, while the slave watchdog never fired,
+  so only a board reset helped. `slave_stuck()` now also resyncs after
+  `SLAVE_STUCK_TICKS` (5 ms) of:
+  - `BTF` set: the master ACKed the last byte, so the slave waits for a `DR`
+    write that the finished DMA never makes.
+  - SCL low with SDA high. Both lines low is the master's deliberate bus hold
+    and is ignored.
+  - `BUSY` set with both lines high, the STM32F40x locked-BUSY erratum
+    (ES0182).
+- Each Layer 1 resync on master and slave now also resets I2C1 from RCC
+  (`__HAL_RCC_I2C1_FORCE_RESET` / `RELEASE_RESET`) between `HAL_I2C_DeInit` and
+  `MX_I2C1_Init`, as part of that erratum workaround.
+- Slave resync logs are one line with the state captured before the reset:
+  `[Slave]  L1 resync (<error|stuck|errors>) err=.. sr1=.. sr2=.. st=.. scl=.. sda=..`.
+  SR1: ADDR 0x0002, BTF 0x0004, TXE 0x0080, AF 0x0400. SR2: BUSY 0x0002,
+  TRA 0x0004.
 
 ## feature/dual-slave-get-loop
 
