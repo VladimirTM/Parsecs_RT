@@ -28,6 +28,25 @@
  * wide margin and keeps a hung round from adding 50 ms to the round trip. */
 #define TRANSACTION_TIMEOUT_TICKS   5U
 
+/* Test aid, off by default: define PARSECS_L1_FAULT_INJECT_EVERY (e.g. -D...=97)
+ * to flip every Nth non-dummy byte this node sends, so the peer sees a CRC
+ * error, answers NACK, and the ARQ retransmission shows up on the bus. */
+#ifdef PARSECS_L1_FAULT_INJECT_EVERY
+static uint32_t fault_inject_count = 0U;
+
+static uint8_t fault_inject(uint8_t byte)
+{
+	if (++fault_inject_count >= PARSECS_L1_FAULT_INJECT_EVERY)
+	{
+		fault_inject_count = 0U;
+		return (uint8_t)(byte ^ 0xFFU);
+	}
+	return byte;
+}
+#else
+static inline uint8_t fault_inject(uint8_t byte) { return byte; }
+#endif
+
 #define LED_HEARTBEAT_Pin   LD4_Pin     /* green  */
 #define LED_ACTIVITY_Pin    LD6_Pin     /* blue   */
 #define LED_WARNING_Pin     LD3_Pin     /* orange */
@@ -232,10 +251,13 @@ static void start_round(SLAVE *slave)
 		CLEAR_BIT(hi2c1.Instance->CR1, I2C_CR1_STOP);
 	}
 
-	tx_byte_val = have_tx ? PARSECS_RingPeekOne(&slave->l1_buffer_tx) : DUMMY_BYTE;
+	tx_byte_val = have_tx ? fault_inject(PARSECS_RingPeekOne(&slave->l1_buffer_tx)) : DUMMY_BYTE;
 	tx_consume = have_tx;
 	active_i2c_address = slave->i2c_address;
 
+	/* Counted even if the round fails, so an absent slave still runs down
+	 * its ARQ timeout and ends up LINK_DOWN. */
+	slave->l1_rounds++;
 	bus_state  = BUS_SENDING;
 	wait_ticks = 0U;
 	/* FIRST_FRAME: no STOP after the write, the read follows with a repeated
@@ -546,7 +568,7 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
 	{
 		phase = PHASE_TRANSMIT;
 		bool have_tx = !PARSECS_RingEmpty(&slave->l1_buffer_tx);
-		tx_byte_val = have_tx ? PARSECS_RingPeekOne(&slave->l1_buffer_tx) : DUMMY_BYTE;
+		tx_byte_val = have_tx ? fault_inject(PARSECS_RingPeekOne(&slave->l1_buffer_tx)) : DUMMY_BYTE;
 		tx_pending = have_tx;
 		if (HAL_I2C_Slave_Seq_Transmit_DMA(hi2c, (uint8_t *)&tx_byte_val, 1U,
 		                                    I2C_FIRST_AND_LAST_FRAME) != HAL_OK)
@@ -587,6 +609,8 @@ void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
 			PARSECS_RingAdvanceRead(&slaves[0].l1_buffer_tx, 1U);
 			tx_pending = false;
 		}
+		/* Single 32-bit store; the task side only reads it, which is atomic on M4. */
+		slaves[0].l1_rounds++;
 		led_activity();
 		led_heartbeat();
 		led_fault_off();

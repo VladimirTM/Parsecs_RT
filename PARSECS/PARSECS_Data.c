@@ -55,6 +55,27 @@ void PARSECS_InitRingBuffers(SLAVE *slave)
 	RingBufInit(&slave->l1_buffer_tx, slave->buff_tx1, RAW_RING_BUFFER_SIZE);//initializez buffer-ul circular buffer tx
 }
 
+//! Clears the Layer 3 ARQ state of one slave: drops any frame waiting for an ACK, forgets the last
+//! delivered RX SEQ and marks the link up. Diagnostic counters and l1_rounds are kept.
+//!
+//! This function is not called directly by the user
+//! \param slave A pointer to a SLAVE structure that identifies the slave that this function will work on.
+//! \return None
+//! \private
+void PARSECS_ARQ_Reset(SLAVE *slave)
+{
+	slave->STATUS_FLAG &= ~(FG_ARQ_WAIT_ACK | FG_ARQ_RETX);
+	slave->arq_length = 0;
+	slave->arq_seq = 0;
+	slave->arq_retries = 0;
+	slave->arq_rto = ARQ_RTO_ROUNDS;
+	slave->arq_elapsed = 0;
+	slave->arq_last_round = slave->l1_rounds;
+	slave->link_state = PARSECS_LINK_UP;
+	slave->last_delivered_rx_seq = 0;
+	slave->rx_seq_valid = false;
+}
+
 //! Function used to initialize all the internal structures and variables of the PARSECS Stack
 //!
 //! This function is not called directly by the user
@@ -67,6 +88,7 @@ void PARSECS_Data_Init()
 	{
 		memset(&slaves[i], 0, sizeof(SLAVE));
 		slaves[i].slave_enabled = 0;
+		PARSECS_ARQ_Reset(&slaves[i]);
 		#ifndef SPI_MASTER
 		PARSECS_InitRingBuffers(&slaves[i]);
 		CRC16_constructor(&slaves[i].spi_packet_rx_1.crc16_object);			// instantiez crc-ul pentru receptie

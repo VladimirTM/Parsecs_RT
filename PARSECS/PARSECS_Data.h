@@ -63,6 +63,8 @@
 #define FG_LL_FUSE_1			0x20000000 //Frame in use in buffer 1 - currently implemented using slave[i].spi_packet_rx_1.packet_ok
 #define FG_LL_FUSE_2			0x10000000 //Frame in use in buffer 2 - currently implemented using slave[i].spi_packet_rx_1.packet_ok
 #define FG_HL_FTTR	 			0x02000000 //High Level Frame to Transmit - comunicatie high level stack transmit cu layer 3/2 transmit
+#define FG_ARQ_WAIT_ACK			0x01000000 //ARQ: DATA frame fully handed to Layer 1, waiting for its ACK
+#define FG_ARQ_RETX				0x00800000 //ARQ: the stored DATA frame must be sent again (NACK or timeout)
 #define FG_LL_FTT 				0x00040000 //Low Level FRAME  TO TRANSMIT
 #define	FG_LL_FTIP				0x00020000 //Low Level FRAME TRANSMIT IN PROGRESS
 #define FG_ACK					0x00008000 //ACK
@@ -126,6 +128,26 @@
 #error SPI_DATA_LENGTH must not exceeed 254
 #endif
 
+/*!
+ * \def ARQ_MAX_RETRIES
+ * Retransmissions of one DATA frame before the link is declared down and the frame is dropped
+ */
+/*!
+ * \def ARQ_RTO_ROUNDS
+ * Initial retransmission timeout, in Layer 1 rounds of this slave. Covers our frame tail still in the
+ * L1 TX ring, whatever the peer already has in its L1 TX ring, the ACK frame itself and a margin.
+ * Rounds while a peer frame is being received are not counted, because the peer can only send the
+ * ACK after that frame, so the peer's own DATA length does not need to be part of the budget.
+ */
+/*!
+ * \def ARQ_RTO_MAX_ROUNDS
+ * Ceiling for the exponential backoff (the timeout doubles on every retransmission)
+ */
+#define ARQ_MAX_RETRIES				3U
+#define ARQ_RTO_MARGIN_ROUNDS		32U
+#define ARQ_RTO_ROUNDS				((2U * RAW_RING_BUFFER_SIZE) + DATA_ENCODING_SIZE + ARQ_RTO_MARGIN_ROUNDS)
+#define ARQ_RTO_MAX_ROUNDS			(4U * ARQ_RTO_ROUNDS)
+
 /*! \page PARSECS_RT_Buffer_size_restrictions
  * Restrictions that apply on the size of the buffers
 -# \f$ SPI\_DATA\_LENGTH >= 4 \f$
@@ -140,6 +162,15 @@
 //! The select function will select the slave by making line for SSEL logic 0.
 //! The deselect function will select the slave by making line for SSEL logic 1.
 typedef void (*SPI_SLAVE_FUNCTION)(void);
+
+//! \enum PARSECS_LINK_STATE
+//! \typedef PARSECS_LINK_STATE
+//! Link state of one slave as seen by the ARQ in Layer 3
+typedef enum
+{
+	PARSECS_LINK_UP = 0,		/**<The last DATA frame was acknowledged (or nothing was sent yet)*/
+	PARSECS_LINK_DOWN = 1,		/**<A DATA frame was dropped after \ref ARQ_MAX_RETRIES retransmissions*/
+}PARSECS_LINK_STATE;
 
 
 //! \struct SPI_BASE_FRAME
@@ -185,6 +216,19 @@ typedef struct
 	volatile uint8_t last_ACKed_packet_sequence_number;				/**<Holds the SEQ for the last acknowledged data packet*/
 	volatile uint8_t last_NACKed_packet_sequence_number;			/**<Holds the SEQ for the last acknowledged data packet*/
 	uint16_t uw_crc16; 												/**<Holds current assembled values of the CRC*/
+	uint8_t arq_buffer[DATA_BUFFER_SIZE];							/**<ARQ: copy of the DATA field of the frame waiting for its ACK*/
+	uint8_t arq_length;												/**<ARQ: length of arq_buffer*/
+	uint8_t arq_seq;												/**<ARQ: SEQ of the frame waiting for its ACK, reused on every retransmission*/
+	uint8_t arq_retries;											/**<ARQ: retransmissions done for the current frame*/
+	uint16_t arq_rto;												/**<ARQ: current retransmission timeout in L1 rounds*/
+	uint16_t arq_elapsed;											/**<ARQ: L1 rounds counted since the frame was handed to L1*/
+	uint32_t arq_last_round;										/**<ARQ: l1_rounds value at the previous Layer 3 TX call*/
+	volatile uint32_t l1_rounds;									/**<Layer 1 rounds for this slave (master: attempted, slave: completed)*/
+	PARSECS_LINK_STATE link_state;									/**<ARQ link state*/
+	uint8_t last_delivered_rx_seq;									/**<SEQ of the last DATA frame delivered to the High Level, for duplicate detection*/
+	bool rx_seq_valid;												/**<last_delivered_rx_seq holds a real value*/
+	uint32_t arq_retransmissions;									/**<Diagnostic: total retransmitted DATA frames*/
+	uint32_t arq_link_down_events;									/**<Diagnostic: total frames dropped after ARQ_MAX_RETRIES*/
 }SLAVE;
 
 /*!
@@ -390,6 +434,7 @@ extern PARSECS_PROTOCOL_BOARD_DESCRIPTOR CORE_TX_Wit_Boards[MAX_BOARD_COUNT];
 
 void PARSECS_Data_Init(void);
 void PARSECS_InitRingBuffers(SLAVE *slave);
+void PARSECS_ARQ_Reset(SLAVE *slave);
 
 #endif
 

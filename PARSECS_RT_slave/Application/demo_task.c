@@ -21,6 +21,7 @@
 #include "main.h"
 #include "log.h"
 #include "PARSECS_Protocol_Interface.h"
+#include "PARSECS_LowLevelAPI.h"
 #include <ber.h>
 
 #ifdef SPI_MASTER
@@ -69,6 +70,29 @@ static bool request_seen = false;
 static void usb_print(const char *msg)
 {
 	LOG_SERIAL("%s", msg);
+}
+
+/* Appended to an existing log line: a second CDC_Transmit_FS in the same
+ * tick would just come back USBD_BUSY. */
+static void format_link_stats(char *out, size_t size, PARSECS_APP_BOARD_ADDRESS board)
+{
+	uint32_t retx = 0U;
+	uint32_t dropped = 0U;
+	uint8_t i;
+
+	out[0] = '\0';
+	for (i = 0U; i < MAX_BOARD_COUNT; i++)
+	{
+		const PARSECS_PROTOCOL_BOARD_DESCRIPTOR *desc = &CORE_TX_Wit_Boards[i];
+		if ((desc->boardAvailable == true) && (desc->boardAddress == board) && (desc->boardSlaveID >= 0) &&
+		    (PARSECS_Get_ARQ_Stats((uint8_t)desc->boardSlaveID, &retx, &dropped) == 0))
+		{
+			snprintf(out, size, " link=%s retx=%lu dropped=%lu",
+			         (PARSECS_Get_Link_State((uint8_t)desc->boardSlaveID) == PARSECS_LINK_UP) ? "UP" : "DOWN",
+			         (unsigned long)retx, (unsigned long)dropped);
+			return;
+		}
+	}
 }
 
 void DemoTask_Init(void)
@@ -127,7 +151,8 @@ static bool send_get(PARSECS_APP_BOARD_ADDRESS board, const char *name)
 static void wait_response(PARSECS_APP_BOARD_ADDRESS board, const char *name,
                           int expected, demo_phase_t next)
 {
-	char line[96];
+	char line[144];
+	char stats[48];
 	uint32_t ber_len = 0U;
 	int8_t status;
 	uint8_t src = 0U;
@@ -159,19 +184,20 @@ static void wait_response(PARSECS_APP_BOARD_ADDRESS board, const char *name,
 
 		HAL_GPIO_WritePin(TIMING_GPIO_Port, TIMING_Pin, GPIO_PIN_RESET);
 		rtt = HAL_GetTick() - request_tick;
+		format_link_stats(stats, sizeof(stats), board);
 		if (BERIntegerDecode(&value, ber_rx, &idx, ber_len) == true)
 		{
 			pass = (value == (int8_t)expected);
 			snprintf(line, sizeof(line),
-			         "%s %s rx GetResponse TypeID=0x%02X value=%d rtt=%lums %s\n",
+			         "%s %s rx GetResponse TypeID=0x%02X value=%d rtt=%lums %s%s\n",
 			         ROLE_TAG, name, (unsigned)type, (int)value,
-			         (unsigned long)rtt, pass ? "PASS" : "FAIL");
+			         (unsigned long)rtt, pass ? "PASS" : "FAIL", stats);
 		}
 		else
 		{
 			snprintf(line, sizeof(line),
-			         "%s %s rx GetResponse TypeID=0x%02X rtt=%lums BER decode FAIL\n",
-			         ROLE_TAG, name, (unsigned)type, (unsigned long)rtt);
+			         "%s %s rx GetResponse TypeID=0x%02X rtt=%lums BER decode FAIL%s\n",
+			         ROLE_TAG, name, (unsigned)type, (unsigned long)rtt, stats);
 		}
 		usb_print(line);
 		HAL_GPIO_TogglePin(GPIOD, LED_HEARTBEAT_Pin);
@@ -183,8 +209,9 @@ static void wait_response(PARSECS_APP_BOARD_ADDRESS board, const char *name,
 	if (phase_ticks >= DEMO_RESPONSE_TIMEOUT_MS)
 	{
 		HAL_GPIO_WritePin(TIMING_GPIO_Port, TIMING_Pin, GPIO_PIN_RESET);
-		snprintf(line, sizeof(line), "%s %s GetResponse timeout FAIL\n",
-		         ROLE_TAG, name);
+		format_link_stats(stats, sizeof(stats), board);
+		snprintf(line, sizeof(line), "%s %s GetResponse timeout FAIL%s\n",
+		         ROLE_TAG, name, stats);
 		usb_print(line);
 		phase = next;
 		phase_ticks = 0U;
@@ -240,7 +267,8 @@ void MyDemoTask(void)
 		break;
 	}
 #else
-	char line[96];
+	char line[144];
+	char stats[48];
 	uint32_t packet_size = 0U;
 	uint32_t ber_len = 0U;
 	int8_t status;
@@ -298,10 +326,11 @@ void MyDemoTask(void)
 	                                   &packet_size);
 	if (status == PARSECS_PROTOCOL_OK)
 	{
+		format_link_stats(stats, sizeof(stats), CORE_TX_WIT_MOTHERBOARD);
 		snprintf(line, sizeof(line),
-		         "%s%s queued GetResponse TypeID=0x%02X value=%d\n",
+		         "%s%s queued GetResponse TypeID=0x%02X value=%d%s\n",
 		         ROLE_TAG, PARSECS_SLAVE_NAME, (unsigned)DEMO_TYPE_ID,
-		         PARSECS_SLAVE_VALUE);
+		         PARSECS_SLAVE_VALUE, stats);
 		usb_print(line);
 		request_seen = false;
 	}
