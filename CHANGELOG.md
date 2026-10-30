@@ -109,6 +109,13 @@
   fires right after the next START. `start_round` now clears a pending STOP
   while `BUSY` is clear, and `TRANSACTION_TIMEOUT_TICKS` is 5 (~5 ms) instead
   of 50 for any other hung round.
+- I2C1 pins PB6/PB7 run at `GPIO_SPEED_FREQ_LOW` instead of `VERY_HIGH`
+  (master and slave, also in the `.ioc`). The fast SDA falling edge at the
+  repeated START coupled a ~10 ns low glitch onto SCL. A 600 s capture after the
+  change has no glitch on SCL.
+- USB `OTG_FS_IRQn` priority is 10 instead of 5 (master and slave, also in the
+  `.ioc`). I2C1 EV/ER and the I2C DMA streams stay at 5, so they preempt a
+  long USB CDC interrupt instead of waiting for it.
 
 ### Layer 3 retransmission (ported from `feature/l3-retransmission`)
 
