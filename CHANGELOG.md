@@ -47,6 +47,22 @@ code only observes; it does not change the recovery.
   real hang stops the callbacks; a busy slave gets several per millisecond.
   The diag line now also prints `filtered=<n>`: how many times the old rule
   (condition alone for 5 ticks) would have resynced and the new one did not.
+- Result after that fix (300 s): the NACK episodes are gone (6 odd rounds
+  instead of 73-119, no CRC errors) and `filtered` reached 194. What was left
+  was one real hang every ~41 s: the read address was ACKed, then the slave
+  held SCL low for 12 ms with `SR1=TXE`, `SR2=TRA|BUSY`, `ADDR` already clear,
+  HAL in `LISTEN` and no `AddrCallback`. The slave tick landed ~80 us after the
+  START, right at the read address ACK. `slave_stuck()` read SR1 and then SR2
+  (for the BUSY check), and that pair clears `ADDR` in hardware; when the
+  address match fell between the two reads the ISR found nothing to handle,
+  so the TX DMA was never started.
+- Fix: SR2 is read only with interrupts off and after SCL and SDA have stayed
+  high for ~5 us (100 contiguous samples of `GPIOB->IDR`); a new START needs
+  ~25 us before it can set `ADDR`. If the bus is not idle the BUSY check is
+  skipped for that tick.
+- "SCL low with SDA high" now only counts as stuck when this slave's own
+  `TXE` or `RXNE` is set. With both clear the low SCL is held by the other
+  slave or the master, and the slave no longer resyncs because of it.
 
 ## feature/debug-logs-roundtrip-timing
 

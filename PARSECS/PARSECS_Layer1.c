@@ -663,24 +663,50 @@ static void i2c_resync(const char *reason)
 	           (unsigned long)state, scl, sda);
 }
 
-/* Any one of these held for SLAVE_STUCK_TICKS means the slave will not recover
- * on its own:
+/* True when SCL and SDA stay high for the whole sampling loop (~5 us at
+ * 168 MHz, longer than any SCL high phase inside a 400 kHz transfer). Called
+ * with interrupts off, so the samples are contiguous. */
+#define BUS_IDLE_SAMPLES    100U
+static bool bus_idle_now(void)
+{
+	const uint32_t both = (uint32_t)(SLAVE_SCL_PIN | SLAVE_SDA_PIN);
+	uint32_t i;
+	for (i = 0U; i < BUS_IDLE_SAMPLES; i++)
+	{
+		if ((GPIOB->IDR & both) != both)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+/* Any one of these held for SLAVE_STUCK_TICKS, with no I2C callback in
+ * between, means the slave will not recover on its own:
  * - ADDR set, or HAL in BUSY_*_LISTEN: after an error in listen mode HAL keeps
  *   State at LISTEN, so EnableListen_IT returns HAL_BUSY while the peripheral
  *   still ACKs its address and holds SCL low with nobody clearing ADDR.
  * - BTF set: the master ACKed the last byte instead of NACKing it, so the slave
  *   stretches SCL waiting for a DR write that the finished DMA never makes.
- * - SCL low with SDA high: any other stretch that does not end. Both lines low
- *   is the master holding the bus on purpose, so it does not count.
+ * - SCL low with SDA high while this slave's TXE or RXNE is set: its own
+ *   stretch that does not end. With both flags clear the low SCL belongs to
+ *   another node (the other slave, or the master holding the bus), so it does
+ *   not count.
  * - BUSY with both lines high: STM32F40x erratum (ES0182), a glitch on the
  *   analog filter locks BUSY although the bus is free.
- * SR2 is only read when SR1 showed ADDR clear: reading SR1 with ADDR set and
- * then SR2 clears ADDR in hardware before the ISR has handled it. */
+ * Reading SR1 and then SR2 clears ADDR in hardware. If an address match lands
+ * between the two reads, the ISR finds ADDR already clear, AddrCallback never
+ * runs, no DMA is started and the slave stretches SCL until the next resync;
+ * the slave tick drifts against the master's rounds, so this used to hit one
+ * read address every ~41 s. SR2 is therefore read only with interrupts off
+ * and after the lines have been idle for several us: a new START needs about
+ * 25 us (address plus ACK) before it can set ADDR. */
 static bool slave_stuck(void)
 {
 	uint32_t sr1 = hi2c1.Instance->SR1;
 	bool scl;
 	bool sda;
+	bool busy_locked = false;
 
 	if ((sr1 & (I2C_SR1_ADDR | I2C_SR1_BTF)) != 0U)
 	{
@@ -700,17 +726,31 @@ static bool slave_stuck(void)
 
 	scl = (HAL_GPIO_ReadPin(GPIOB, SLAVE_SCL_PIN) == GPIO_PIN_SET);
 	sda = (HAL_GPIO_ReadPin(GPIOB, SLAVE_SDA_PIN) == GPIO_PIN_SET);
-	if (!scl && sda)
+	if (!scl && sda && ((sr1 & (I2C_SR1_TXE | I2C_SR1_RXNE)) != 0U))
 	{
 #ifdef PARSECS_SLAVE_I2C_DIAG
 		stuck_why = STUCK_SCL;
 #endif
 		return true;
 	}
+
+	if (scl && sda)
+	{
+		uint32_t key = PARSECS_IrqLock();
+		if (bus_idle_now() &&
+		    ((hi2c1.Instance->SR1 & I2C_SR1_ADDR) == 0U))
+		{
+			busy_locked = ((hi2c1.Instance->SR2 & I2C_SR2_BUSY) != 0U);
+		}
+		PARSECS_IrqUnlock(key);
+	}
 #ifdef PARSECS_SLAVE_I2C_DIAG
-	stuck_why = STUCK_BUSY;
+	if (busy_locked)
+	{
+		stuck_why = STUCK_BUSY;
+	}
 #endif
-	return scl && sda && ((hi2c1.Instance->SR2 & I2C_SR2_BUSY) != 0U);
+	return busy_locked;
 }
 
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
