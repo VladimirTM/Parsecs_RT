@@ -60,9 +60,17 @@ code only observes; it does not change the recovery.
   high for ~5 us (100 contiguous samples of `GPIOB->IDR`); a new START needs
   ~25 us before it can set `ADDR`. If the bus is not idle the BUSY check is
   skipped for that tick.
-- "SCL low with SDA high" now only counts as stuck when this slave's own
-  `TXE` or `RXNE` is set. With both clear the low SCL is held by the other
-  slave or the master, and the slave no longer resyncs because of it.
+- Result after that fix (330 s): the comm hang dropped to 3 (121.3, 162.3 and
+  325.8 s), still on the ~41 s grid and with the same registers. The HAL slave
+  ISR reads SR2 first and SR1 second, so a task read of SR1 alone is enough:
+  if it lands in the few cycles between ADDR being set and the ISR starting,
+  the ISR's own SR2 read completes the clearing sequence. The own-stretch
+  check (`TXE`/`RXNE` from SR1) was one such read.
+- Fix: the stuck check no longer reads SR1 or SR2 outside the idle-bus window.
+  ADDR or BTF left set always show as SCL held low, so the flag check is
+  folded into "SCL low with SDA high" (the `stuck` ADDR/BTF counter stays 0).
+  The lines are read once from `GPIOB->IDR`. A stretch held by the other slave
+  matches again; resyncing an idle slave then is harmless.
 
 ## feature/debug-logs-roundtrip-timing
 
