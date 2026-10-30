@@ -30,6 +30,7 @@
 #include "PARSECS_LowLevelTask.h"
 #include "PARSECS_HighLevelTask.h"
 #include "log.h"
+#include "PARSECS_Layer1.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -229,6 +230,7 @@ static void HeartbeatTaskStart(void *argument)
     osDelay(1000);
     count++;
     LOG_SERIAL("heartbeat %lu\n", (unsigned long)count);
+    PARSECS_Layer1_DiagReport();
     if (count == 5U)
     {
       LOG_SERIAL("stack free words: myTestTask=%lu logTask=%lu heartbeat=%lu\n",

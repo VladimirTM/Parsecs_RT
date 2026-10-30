@@ -17,6 +17,14 @@
  * the text and logTask sends it, so the prints do not stall I2C. */
 #define I2C_PROTOCOL_DEBUG
 
+/*!
+ * \def PARSECS_SLAVE_I2C_DIAG
+ * Slave builds only: counts the I2C error/recovery paths of Layer 1, logs the
+ * counters once per second when they change, and pulses PE7 on each event
+ * (see CHANGELOG, feature/slave-i2c-diagnostics). Comment out to remove it.
+ */
+#define PARSECS_SLAVE_I2C_DIAG
+
 #ifdef I2C_PROTOCOL_DEBUG
 
 #define I2C_PROTOCOL_LL_DEBUG

@@ -21,6 +21,11 @@ void PARSECS_LAYER1(SLAVE *slave);
 bool PARSECS_Layer1_HoldLinesLow(void);
 void PARSECS_Layer1_ReleaseLines(void);
 #endif
+#ifndef SPI_MASTER
+//! Logs the slave I2C diagnostic counters when they changed since the last call
+//! (no-op unless PARSECS_SLAVE_I2C_DIAG is defined in PARSECS_Debug.h).
+void PARSECS_Layer1_DiagReport(void);
+#endif
 
 #endif
 

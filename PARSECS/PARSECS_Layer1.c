@@ -453,10 +453,148 @@ static volatile uint8_t tx_byte_val;
  * it out and NACKed it, which ends the read. On a bus error it stays. */
 static volatile bool tx_pending = false;
 
+#ifdef PARSECS_SLAVE_I2C_DIAG
+/* Diagnostics for the episodes where the slave ACKs the write but NACKs its
+ * read address after the repeated START. Each event below bumps a counter
+ * (printed by PARSECS_Layer1_DiagReport) and puts n short pulses on PE7, so it
+ * can be lined up with SCL/SDA on the logic analyser. PE7 is also held high
+ * for the whole of i2c_resync(). */
+#define DIAG_PORT   GPIOE
+#define DIAG_PIN    GPIO_PIN_7
+
+typedef enum
+{
+	DIAG_ERROR_CB    = 1U,	/* HAL_I2C_ErrorCallback */
+	DIAG_LISTEN_FAIL = 2U,	/* HAL_I2C_EnableListen_IT did not return HAL_OK */
+	DIAG_RX_ARM_FAIL = 3U,	/* Seq_Receive_DMA refused in AddrCallback (master write) */
+	DIAG_TX_ARM_FAIL = 4U,	/* Seq_Transmit_DMA refused in AddrCallback (master read) */
+	DIAG_RX_LOST     = 5U,	/* write addressed, but SlaveRxCpltCallback never came */
+	DIAG_ACK_OFF     = 6U,	/* CR1.ACK or CR1.PE is 0 while the slave should be listening */
+} diag_event_t;
+
+typedef struct
+{
+	uint32_t err_cb;
+	uint32_t err_berr;
+	uint32_t err_arlo;
+	uint32_t err_af;
+	uint32_t err_ovr;
+	uint32_t err_dma;
+	uint32_t err_other;
+	uint32_t listen_fail;
+	uint32_t rx_arm_fail;
+	uint32_t tx_arm_fail;
+	uint32_t rx_lost;
+	uint32_t ack_off_rx;	/* seen in SlaveRxCpltCallback, just before the repeated START */
+	uint32_t ack_off_tick;	/* seen by the Layer 1 tick */
+	uint32_t resync_error;
+	uint32_t resync_stuck;
+	uint32_t resync_errors;
+	uint32_t stuck_flag;	/* ADDR or BTF left set */
+	uint32_t stuck_state;	/* HAL handle left in BUSY_RX_LISTEN / BUSY_TX_LISTEN */
+	uint32_t stuck_scl;		/* SCL held low with SDA high */
+	uint32_t stuck_busy;	/* BUSY set with both lines high */
+	uint32_t last_state;	/* hi2c1.State at the last error / failed call */
+} slave_diag_t;
+
+typedef enum { STUCK_NONE, STUCK_FLAG, STUCK_STATE, STUCK_SCL, STUCK_BUSY } stuck_why_t;
+
+static volatile slave_diag_t diag;
+static slave_diag_t diag_reported;
+static volatile bool rx_wait = false;	/* write addressed, byte not delivered yet */
+static bool ack_off_seen = false;
+static stuck_why_t stuck_why = STUCK_NONE;
+
+/* ~150 ns high, ~150 ns low at 168 MHz: short enough not to change the race
+ * being measured, long enough for a 100 MS/s capture. */
+static inline void diag_wait(void)
+{
+	for (volatile uint8_t d = 0U; d < 4U; d++)
+	{
+	}
+}
+
+static void diag_pulse(diag_event_t n)
+{
+	uint32_t i;
+	for (i = 0U; i < (uint32_t)n; i++)
+	{
+		DIAG_PORT->BSRR = DIAG_PIN;
+		diag_wait();
+		DIAG_PORT->BSRR = (uint32_t)DIAG_PIN << 16U;
+		diag_wait();
+	}
+}
+
+static inline void diag_level(bool high)
+{
+	DIAG_PORT->BSRR = high ? DIAG_PIN : ((uint32_t)DIAG_PIN << 16U);
+}
+
+static void diag_init(void)
+{
+	GPIO_InitTypeDef gpio = {0};
+	__HAL_RCC_GPIOE_CLK_ENABLE();
+	gpio.Pin = DIAG_PIN;
+	gpio.Mode = GPIO_MODE_OUTPUT_PP;
+	gpio.Pull = GPIO_NOPULL;
+	gpio.Speed = GPIO_SPEED_FREQ_MEDIUM;
+	HAL_GPIO_Init(DIAG_PORT, &gpio);
+	diag_level(false);
+}
+
+static inline bool diag_ack_on(void)
+{
+	return (hi2c1.Instance->CR1 & (I2C_CR1_ACK | I2C_CR1_PE)) == (I2C_CR1_ACK | I2C_CR1_PE);
+}
+
+static void diag_error(uint32_t code)
+{
+	diag.err_cb++;
+	if ((code & HAL_I2C_ERROR_BERR) != 0U) diag.err_berr++;
+	if ((code & HAL_I2C_ERROR_ARLO) != 0U) diag.err_arlo++;
+	if ((code & HAL_I2C_ERROR_AF) != 0U)   diag.err_af++;
+	if ((code & HAL_I2C_ERROR_OVR) != 0U)  diag.err_ovr++;
+	if ((code & HAL_I2C_ERROR_DMA) != 0U)  diag.err_dma++;
+	if ((code & ~(HAL_I2C_ERROR_BERR | HAL_I2C_ERROR_ARLO | HAL_I2C_ERROR_AF |
+	              HAL_I2C_ERROR_OVR | HAL_I2C_ERROR_DMA)) != 0U) diag.err_other++;
+	diag.last_state = (uint32_t)hi2c1.State;
+	diag_pulse(DIAG_ERROR_CB);
+}
+
+static void diag_listen_result(bool ok)
+{
+	if (!ok)
+	{
+		diag.listen_fail++;
+		diag.last_state = (uint32_t)hi2c1.State;
+		diag_pulse(DIAG_LISTEN_FAIL);
+	}
+}
+
+/* A new address match while the previous write byte was never delivered. */
+static void diag_check_rx_lost(void)
+{
+	if (rx_wait)
+	{
+		rx_wait = false;
+		diag.rx_lost++;
+		diag_pulse(DIAG_RX_LOST);
+	}
+}
+#else
+static inline void diag_init(void) {}
+static inline void diag_level(bool high) { (void)high; }
+static inline void diag_error(uint32_t code) { (void)code; }
+static inline void diag_listen_result(bool ok) { (void)ok; }
+static inline void diag_check_rx_lost(void) {}
+#endif
+
 static void start_listen(void)
 {
 	phase = PHASE_RECEIVE;
 	listening = (HAL_I2C_EnableListen_IT(&hi2c1) == HAL_OK);
+	diag_listen_result(listening);
 }
 
 /* The registers and pin levels are captured before the reset so the log shows
@@ -474,6 +612,14 @@ static void i2c_resync(const char *reason)
 	HAL_NVIC_DisableIRQ(I2C1_ER_IRQn);
 	HAL_NVIC_DisableIRQ(DMA1_Stream0_IRQn);
 	HAL_NVIC_DisableIRQ(DMA1_Stream6_IRQn);
+	diag_level(true);
+#ifdef PARSECS_SLAVE_I2C_DIAG
+	if (rx_wait)
+	{
+		rx_wait = false;
+		diag.rx_lost++;
+	}
+#endif
 
 	sr1 = hi2c1.Instance->SR1;
 	sr2 = hi2c1.Instance->SR2;
@@ -503,6 +649,7 @@ static void i2c_resync(const char *reason)
 	stuck_ticks = 0U;
 	error_reset();
 	phase = PHASE_RECEIVE;
+	diag_level(false);
 
 	LOG_SERIAL("[Slave]  L1 resync (%s) err=0x%02lX sr1=0x%04lX sr2=0x%04lX st=0x%02lX scl=%u sda=%u\n",
 	           reason, (unsigned long)err, (unsigned long)sr1, (unsigned long)sr2,
@@ -530,11 +677,17 @@ static bool slave_stuck(void)
 
 	if ((sr1 & (I2C_SR1_ADDR | I2C_SR1_BTF)) != 0U)
 	{
+#ifdef PARSECS_SLAVE_I2C_DIAG
+		stuck_why = STUCK_FLAG;
+#endif
 		return true;
 	}
 	if ((hi2c1.State == HAL_I2C_STATE_BUSY_RX_LISTEN) ||
 	    (hi2c1.State == HAL_I2C_STATE_BUSY_TX_LISTEN))
 	{
+#ifdef PARSECS_SLAVE_I2C_DIAG
+		stuck_why = STUCK_STATE;
+#endif
 		return true;
 	}
 
@@ -542,8 +695,14 @@ static bool slave_stuck(void)
 	sda = (HAL_GPIO_ReadPin(GPIOB, SLAVE_SDA_PIN) == GPIO_PIN_SET);
 	if (!scl && sda)
 	{
+#ifdef PARSECS_SLAVE_I2C_DIAG
+		stuck_why = STUCK_SCL;
+#endif
 		return true;
 	}
+#ifdef PARSECS_SLAVE_I2C_DIAG
+	stuck_why = STUCK_BUSY;
+#endif
 	return scl && sda && ((hi2c1.Instance->SR2 & I2C_SR2_BUSY) != 0U);
 }
 
@@ -557,16 +716,29 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
 	if (TransferDirection == I2C_DIRECTION_TRANSMIT)
 	{
 		phase = PHASE_RECEIVE;
+		diag_check_rx_lost();
 		if (HAL_I2C_Slave_Seq_Receive_DMA(hi2c, (uint8_t *)&rx_byte_val, 1U,
 		                                   I2C_FIRST_AND_LAST_FRAME) != HAL_OK)
 		{
 			error_inc();
 			listening = false;
+#ifdef PARSECS_SLAVE_I2C_DIAG
+			diag.rx_arm_fail++;
+			diag.last_state = (uint32_t)hi2c->State;
+			diag_pulse(DIAG_RX_ARM_FAIL);
+#endif
 		}
+#ifdef PARSECS_SLAVE_I2C_DIAG
+		else
+		{
+			rx_wait = true;
+		}
+#endif
 	}
 	else
 	{
 		phase = PHASE_TRANSMIT;
+		diag_check_rx_lost();
 		bool have_tx = !PARSECS_RingEmpty(&slave->l1_buffer_tx);
 		tx_byte_val = have_tx ? fault_inject(PARSECS_RingPeekOne(&slave->l1_buffer_tx)) : DUMMY_BYTE;
 		tx_pending = have_tx;
@@ -576,6 +748,11 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
 			tx_pending = false;
 			error_inc();
 			listening = false;
+#ifdef PARSECS_SLAVE_I2C_DIAG
+			diag.tx_arm_fail++;
+			diag.last_state = (uint32_t)hi2c->State;
+			diag_pulse(DIAG_TX_ARM_FAIL);
+#endif
 		}
 	}
 }
@@ -589,6 +766,17 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
 	{
 		PARSECS_RingWriteOne(&slave->l1_buffer_rx, rx_byte_val);
 	}
+#ifdef PARSECS_SLAVE_I2C_DIAG
+	rx_wait = false;
+	/* The repeated START with the read address follows ~5 us later; it is
+	 * only ACKed if CR1.ACK and CR1.PE are still set here. */
+	if (!diag_ack_on())
+	{
+		diag.ack_off_rx++;
+		diag.last_state = (uint32_t)hi2c->State;
+		diag_pulse(DIAG_ACK_OFF);
+	}
+#endif
 }
 
 void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c)
@@ -618,6 +806,7 @@ void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
 	}
 
 	listening = (HAL_I2C_EnableListen_IT(hi2c) == HAL_OK);
+	diag_listen_result(listening);
 }
 
 void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
@@ -626,6 +815,7 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 
 	error_inc();
 	last_error = hi2c->ErrorCode;
+	diag_error(hi2c->ErrorCode);
 	tx_pending = false;
 	listening = false;
 	resync_requested = true;
@@ -633,6 +823,7 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 
 void PARSECS_Layer1_Init(void)
 {
+	diag_init();
 	listening = false;
 	resync_requested = false;
 	tx_pending = false;
@@ -646,8 +837,30 @@ void PARSECS_LAYER1(SLAVE *slave)
 {
 	(void)slave;
 
+#ifdef PARSECS_SLAVE_I2C_DIAG
+	/* ISRs run to completion before this task code, so a cleared ACK seen here
+	 * with listening still true was not put back by anyone. */
+	if (listening && !resync_requested && !diag_ack_on())
+	{
+		if (!ack_off_seen)
+		{
+			ack_off_seen = true;
+			diag.ack_off_tick++;
+			diag.last_state = (uint32_t)hi2c1.State;
+			diag_pulse(DIAG_ACK_OFF);
+		}
+	}
+	else
+	{
+		ack_off_seen = false;
+	}
+#endif
+
 	if (resync_requested)
 	{
+#ifdef PARSECS_SLAVE_I2C_DIAG
+		diag.resync_error++;
+#endif
 		i2c_resync("error");
 	}
 
@@ -655,6 +868,17 @@ void PARSECS_LAYER1(SLAVE *slave)
 	{
 		if (++stuck_ticks > SLAVE_STUCK_TICKS)
 		{
+#ifdef PARSECS_SLAVE_I2C_DIAG
+			diag.resync_stuck++;
+			switch (stuck_why)
+			{
+				case STUCK_FLAG:  diag.stuck_flag++;  break;
+				case STUCK_STATE: diag.stuck_state++; break;
+				case STUCK_SCL:   diag.stuck_scl++;   break;
+				case STUCK_BUSY:  diag.stuck_busy++;  break;
+				default: break;
+			}
+#endif
 			i2c_resync("stuck");
 		}
 	}
@@ -674,8 +898,39 @@ void PARSECS_LAYER1(SLAVE *slave)
 
 	if (error_count >= MAX_CONSEC_ERRORS)
 	{
+#ifdef PARSECS_SLAVE_I2C_DIAG
+		diag.resync_errors++;
+#endif
 		i2c_resync("errors");
 	}
+}
+
+void PARSECS_Layer1_DiagReport(void)
+{
+#ifdef PARSECS_SLAVE_I2C_DIAG
+	slave_diag_t now;
+	uint32_t key = PARSECS_IrqLock();
+	memcpy(&now, (const void *)&diag, sizeof(now));
+	PARSECS_IrqUnlock(key);
+
+	if (memcmp(&now, &diag_reported, sizeof(now)) == 0)
+	{
+		return;
+	}
+	diag_reported = now;
+	LOG_SERIAL("[Slave]  diag t=%lu rounds=%lu err=%lu(B%lu A%lu F%lu O%lu D%lu X%lu) listenfail=%lu armfail=%lu/%lu rxlost=%lu ackoff=%lu/%lu\n",
+	           (unsigned long)HAL_GetTick(), (unsigned long)slaves[0].l1_rounds,
+	           (unsigned long)now.err_cb, (unsigned long)now.err_berr, (unsigned long)now.err_arlo,
+	           (unsigned long)now.err_af, (unsigned long)now.err_ovr, (unsigned long)now.err_dma,
+	           (unsigned long)now.err_other, (unsigned long)now.listen_fail,
+	           (unsigned long)now.rx_arm_fail, (unsigned long)now.tx_arm_fail,
+	           (unsigned long)now.rx_lost, (unsigned long)now.ack_off_rx, (unsigned long)now.ack_off_tick);
+	LOG_SERIAL("[Slave]  diag resync=%lu/%lu/%lu stuck=%lu/%lu/%lu/%lu state=0x%02lX\n",
+	           (unsigned long)now.resync_error, (unsigned long)now.resync_stuck,
+	           (unsigned long)now.resync_errors, (unsigned long)now.stuck_flag,
+	           (unsigned long)now.stuck_state, (unsigned long)now.stuck_scl,
+	           (unsigned long)now.stuck_busy, (unsigned long)now.last_state);
+#endif
 }
 
 #endif

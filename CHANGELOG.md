@@ -1,5 +1,37 @@
 # Changelog
 
+## feature/slave-i2c-diagnostics
+
+Slave-only diagnostics for the episodes where a slave ACKs the master's write
+byte but NACKs its own read address after the repeated START (8-20 rounds in a
+row, ~1 every 20 s). On the bus those rounds look exactly like good ones, so
+the cause is inside the slave: at that moment `CR1.ACK` or `CR1.PE` is 0. The
+code only observes; it does not change the recovery.
+
+- `PARSECS_SLAVE_I2C_DIAG` in `PARSECS_Debug.h` (on in this branch, ignored on
+  the master build).
+- Every Layer 1 error/recovery path on the slave bumps a counter and pulses
+  PE7 (pulses ~150 ns high / 150 ns low):
+
+  | Pulses on PE7 | Event |
+  |---|---|
+  | 1 | `HAL_I2C_ErrorCallback` (counted per `ErrorCode` bit: BERR, ARLO, AF, OVR, DMA, other) |
+  | 2 | `HAL_I2C_EnableListen_IT` did not return `HAL_OK` |
+  | 3 | `HAL_I2C_Slave_Seq_Receive_DMA` refused in `AddrCallback` (master write) |
+  | 4 | `HAL_I2C_Slave_Seq_Transmit_DMA` refused in `AddrCallback` (master read) |
+  | 5 | a write was addressed but `SlaveRxCpltCallback` never came (byte ACKed by hardware, lost in software) |
+  | 6 | `CR1.ACK` or `CR1.PE` is 0 when it must be 1: right after the write byte in `SlaveRxCpltCallback`, or in the Layer 1 tick while `listening` is true |
+  | high for the whole call | `i2c_resync()` |
+
+- Once per second, if anything changed, the heartbeat task logs two lines:
+  `[Slave]  diag t=<ms> rounds=<n> err=<n>(B A F O D X) listenfail=<n> armfail=<rx>/<tx> rxlost=<n> ackoff=<rx>/<tick>`
+  and `[Slave]  diag resync=<error>/<stuck>/<errors> stuck=<ADDR|BTF>/<BUSY_*_LISTEN>/<SCL low>/<BUSY> state=<hi2c1.State at the last event>`.
+  All counters are cumulative since reset.
+- `slave_stuck()` records which condition fired, so stuck resyncs are split by
+  reason.
+- Capture: PE7 of each slave on its own logic analyser channel next to
+  SCL/SDA, at least 50 MS/s, with the glitch filter off on those channels.
+
 ## feature/debug-logs-roundtrip-timing
 
 - Turned on the High Level layer logs that were already in the stack, ported
