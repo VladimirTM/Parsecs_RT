@@ -446,6 +446,11 @@ typedef enum { PHASE_RECEIVE, PHASE_TRANSMIT } phase_t;
 static volatile bool listening = false;
 static volatile bool resync_requested = false;
 static uint16_t stuck_ticks = 0U;
+/* Bumped by every I2C callback for this slave (address match, byte received,
+ * end of a read). The I2C and DMA interrupts share one priority, so they never
+ * preempt each other and the increment needs no lock; the task only reads it. */
+static volatile uint32_t i2c_events = 0U;
+static uint32_t stuck_last_events = 0U;
 static volatile phase_t phase = PHASE_RECEIVE;
 static volatile uint8_t rx_byte_val;
 static volatile uint8_t tx_byte_val;
@@ -509,42 +514,76 @@ static void i2c_resync(const char *reason)
 	           (unsigned long)state, scl, sda);
 }
 
-/* Any one of these held for SLAVE_STUCK_TICKS means the slave will not recover
- * on its own:
- * - ADDR set, or HAL in BUSY_*_LISTEN: after an error in listen mode HAL keeps
- *   State at LISTEN, so EnableListen_IT returns HAL_BUSY while the peripheral
- *   still ACKs its address and holds SCL low with nobody clearing ADDR.
- * - BTF set: the master ACKed the last byte instead of NACKing it, so the slave
- *   stretches SCL waiting for a DR write that the finished DMA never makes.
- * - SCL low with SDA high: any other stretch that does not end. Both lines low
- *   is the master holding the bus on purpose, so it does not count.
+/* True when SCL and SDA stay high for the whole sampling loop (~5 us at
+ * 168 MHz, longer than any SCL high phase inside a 400 kHz transfer). Called
+ * with interrupts off, so the samples are contiguous. */
+#define BUS_IDLE_SAMPLES    100U
+static bool bus_idle_now(void)
+{
+	const uint32_t both = (uint32_t)(SLAVE_SCL_PIN | SLAVE_SDA_PIN);
+	uint32_t i;
+	for (i = 0U; i < BUS_IDLE_SAMPLES; i++)
+	{
+		if ((GPIOB->IDR & both) != both)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+/* Any one of these held for SLAVE_STUCK_TICKS, with no I2C callback in
+ * between, means the slave will not recover on its own:
+ * - HAL in BUSY_*_LISTEN: after an error in listen mode HAL keeps State at
+ *   LISTEN, so EnableListen_IT returns HAL_BUSY and nobody restarts the slave.
+ * - SCL low with SDA high: a stretch that does not end. This covers an ADDR or
+ *   BTF left set (the peripheral holds SCL while either is set) and a TX
+ *   started without DMA. Both lines low is the master holding the bus on
+ *   purpose, so it does not count. A stretch by the other slave also matches;
+ *   resyncing an idle slave then is harmless.
  * - BUSY with both lines high: STM32F40x erratum (ES0182), a glitch on the
  *   analog filter locks BUSY although the bus is free.
- * SR2 is only read when SR1 showed ADDR clear: reading SR1 with ADDR set and
- * then SR2 clears ADDR in hardware before the ISR has handled it. */
+ *
+ * The task must not read SR1 or SR2 while an address match can happen.
+ * Reading SR1 with ADDR set and then SR2 clears ADDR in hardware, and the HAL
+ * slave ISR reads SR2 first and SR1 second. A task read of SR1 that lands in
+ * the few cycles between ADDR being set and the ISR starting therefore turns
+ * the ISR's own SR2 read into the clearing read: the ISR then sees ADDR clear,
+ * AddrCallback never runs, no DMA is started and the slave stretches SCL
+ * until the next resync. The slave tick drifts against the master's rounds,
+ * so this used to hit one read address every ~41 s. The status registers are
+ * now read only with interrupts off and after SCL and SDA have stayed high
+ * for several us: a new START needs about 25 us before it can set ADDR. */
 static bool slave_stuck(void)
 {
-	uint32_t sr1 = hi2c1.Instance->SR1;
-	bool scl;
-	bool sda;
+	uint32_t lines = GPIOB->IDR & (uint32_t)(SLAVE_SCL_PIN | SLAVE_SDA_PIN);
+	bool scl = ((lines & SLAVE_SCL_PIN) != 0U);
+	bool sda = ((lines & SLAVE_SDA_PIN) != 0U);
+	bool busy_locked = false;
 
-	if ((sr1 & (I2C_SR1_ADDR | I2C_SR1_BTF)) != 0U)
-	{
-		return true;
-	}
 	if ((hi2c1.State == HAL_I2C_STATE_BUSY_RX_LISTEN) ||
 	    (hi2c1.State == HAL_I2C_STATE_BUSY_TX_LISTEN))
 	{
 		return true;
 	}
 
-	scl = (HAL_GPIO_ReadPin(GPIOB, SLAVE_SCL_PIN) == GPIO_PIN_SET);
-	sda = (HAL_GPIO_ReadPin(GPIOB, SLAVE_SDA_PIN) == GPIO_PIN_SET);
 	if (!scl && sda)
 	{
 		return true;
 	}
-	return scl && sda && ((hi2c1.Instance->SR2 & I2C_SR2_BUSY) != 0U);
+
+	if (scl && sda)
+	{
+		uint32_t key = PARSECS_IrqLock();
+		if (bus_idle_now())
+		{
+			uint32_t sr1 = hi2c1.Instance->SR1;
+			uint32_t sr2 = hi2c1.Instance->SR2;
+			busy_locked = ((sr2 & I2C_SR2_BUSY) != 0U) && ((sr1 & I2C_SR1_ADDR) == 0U);
+		}
+		PARSECS_IrqUnlock(key);
+	}
+	return busy_locked;
 }
 
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
@@ -553,6 +592,7 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
 	SLAVE *slave = &slaves[0];
 	if (hi2c->Instance != I2C1) return;
 	(void)AddrMatchCode;
+	i2c_events++;
 
 	if (TransferDirection == I2C_DIRECTION_TRANSMIT)
 	{
@@ -584,6 +624,7 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	SLAVE *slave = &slaves[0];
 	if (hi2c->Instance != I2C1) return;
+	i2c_events++;
 
 	if (!PARSECS_RingFull(&slave->l1_buffer_rx))
 	{
@@ -601,6 +642,7 @@ void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c)
 void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	if (hi2c->Instance != I2C1) return;
+	i2c_events++;
 
 	if (phase == PHASE_TRANSMIT)
 	{
@@ -651,7 +693,20 @@ void PARSECS_LAYER1(SLAVE *slave)
 		i2c_resync("error");
 	}
 
-	if (slave_stuck())
+	/* slave_stuck() samples the lines, BUSY and the HAL state once per tick.
+	 * Each of its conditions is also true for a few us inside any normal
+	 * round, and the slave tick drifts against the master's rounds (separate
+	 * crystals, ~20 us/s), so for tens of ms at a time every sample can land
+	 * inside a round. The condition alone then looked like a 5 ms hang and the
+	 * resync reset the peripheral in the middle of a transfer (NACKed read
+	 * address, lost byte). A real hang also stops the I2C callbacks, so a
+	 * stuck tick now only counts when no callback ran since the last tick. */
+	uint32_t events_now = i2c_events;
+	bool progress = (events_now != stuck_last_events);
+	bool stuck_now = slave_stuck();
+	stuck_last_events = events_now;
+
+	if (stuck_now && !progress)
 	{
 		if (++stuck_ticks > SLAVE_STUCK_TICKS)
 		{

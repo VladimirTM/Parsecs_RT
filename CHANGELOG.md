@@ -116,6 +116,28 @@
 - USB `OTG_FS_IRQn` priority is 10 instead of 5 (master and slave, also in the
   `.ioc`). I2C1 EV/ER and the I2C DMA streams stay at 5, so they preempt a
   long USB CDC interrupt instead of waiting for it.
+- Slave stuck detection no longer resets a slave that is only busy. Found
+  with the diagnostics on `feature/slave-i2c-diagnostics` (PE7 pulses and
+  counters, not part of this branch):
+  - `slave_stuck()` sampled SCL/SDA, `BUSY` and the HAL state once per tick,
+    and each condition is also true for a few us inside a normal round. The
+    slave tick drifts against the master's rounds (separate crystals,
+    ~21 us/s), so every ~41 s it sat inside the rounds for tens of ms, the
+    condition held for 5 ticks and `i2c_resync()` reset the peripheral
+    mid-transfer: 8-24 rounds in a row with a NACKed read address, bytes ACKed
+    by the hardware but lost, `0xFF` reads. A stuck tick now only counts when
+    no I2C callback (`AddrCallback`, `SlaveRxCpltCallback`,
+    `ListenCpltCallback`) ran since the previous tick.
+  - The task read SR1 (and SR2 for the BUSY check). Reading SR1 with ADDR set
+    and then SR2 clears ADDR, and the HAL slave ISR reads SR2 first, so a task
+    read of SR1 just before the ISR made the ISR lose ADDR: no `AddrCallback`,
+    no TX DMA, SCL held for 12 ms until a resync, once every ~41 s. The stuck
+    check now reads the lines once from `GPIOB->IDR` and reads SR1/SR2 only
+    with interrupts off after SCL and SDA have stayed high for ~5 us; ADDR or
+    BTF left set show up as SCL held low.
+  - A 310 s capture after both changes: 123 396 complete rounds, no NACK, no
+    CRC error, no retransmission, no resync, every demo cycle active for
+    330 ms.
 
 ### Layer 3 retransmission (ported from `feature/l3-retransmission`)
 
