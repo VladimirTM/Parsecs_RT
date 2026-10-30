@@ -31,6 +31,22 @@ code only observes; it does not change the recovery.
   reason.
 - Capture: PE7 of each slave on its own logic analyser channel next to
   SCL/SDA, at least 50 MS/s, with the glitch filter off on those channels.
+- Result of the first capture (300 s, comm slave): no HAL errors, no failed
+  re-listen, ACK never left cleared. All 176 resyncs were `stuck` resyncs, and
+  173 of them started in the middle of a round on the bus; the 69 that fell in
+  the comm's own rounds started ~55 us after the START, at the repeated START,
+  and are exactly the rounds with the NACKed read address. `slave_stuck()`
+  samples SCL/SDA, `BUSY` and the HAL state once per tick; each of its
+  conditions is also true for a few us inside a normal round. The slave tick
+  drifts against the master's rounds (separate crystals, ~21 us/s), so every
+  ~41 s it sits in that window for tens of ms, the condition holds for
+  5 ticks in a row, and the resync resets the peripheral mid-transfer. That
+  also explains the bytes that were ACKed but lost and the `0xFF` reads.
+- Fix: a stuck tick only counts when no I2C callback (`AddrCallback`,
+  `SlaveRxCpltCallback`, `ListenCpltCallback`) ran since the previous tick. A
+  real hang stops the callbacks; a busy slave gets several per millisecond.
+  The diag line now also prints `filtered=<n>`: how many times the old rule
+  (condition alone for 5 ticks) would have resynced and the new one did not.
 
 ## feature/debug-logs-roundtrip-timing
 

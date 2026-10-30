@@ -446,6 +446,11 @@ typedef enum { PHASE_RECEIVE, PHASE_TRANSMIT } phase_t;
 static volatile bool listening = false;
 static volatile bool resync_requested = false;
 static uint16_t stuck_ticks = 0U;
+/* Bumped by every I2C callback for this slave (address match, byte received,
+ * end of a read). The I2C and DMA interrupts share one priority, so they never
+ * preempt each other and the increment needs no lock; the task only reads it. */
+static volatile uint32_t i2c_events = 0U;
+static uint32_t stuck_last_events = 0U;
 static volatile phase_t phase = PHASE_RECEIVE;
 static volatile uint8_t rx_byte_val;
 static volatile uint8_t tx_byte_val;
@@ -494,6 +499,7 @@ typedef struct
 	uint32_t stuck_state;	/* HAL handle left in BUSY_RX_LISTEN / BUSY_TX_LISTEN */
 	uint32_t stuck_scl;		/* SCL held low with SDA high */
 	uint32_t stuck_busy;	/* BUSY set with both lines high */
+	uint32_t stuck_filtered;	/* times the old rule (condition alone) would have resynced */
 	uint32_t last_state;	/* hi2c1.State at the last error / failed call */
 } slave_diag_t;
 
@@ -504,6 +510,7 @@ static slave_diag_t diag_reported;
 static volatile bool rx_wait = false;	/* write addressed, byte not delivered yet */
 static bool ack_off_seen = false;
 static stuck_why_t stuck_why = STUCK_NONE;
+static uint16_t old_rule_ticks = 0U;
 
 /* ~150 ns high, ~150 ns low at 168 MHz: short enough not to change the race
  * being measured, long enough for a 100 MS/s capture. */
@@ -712,6 +719,7 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
 	SLAVE *slave = &slaves[0];
 	if (hi2c->Instance != I2C1) return;
 	(void)AddrMatchCode;
+	i2c_events++;
 
 	if (TransferDirection == I2C_DIRECTION_TRANSMIT)
 	{
@@ -761,6 +769,7 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	SLAVE *slave = &slaves[0];
 	if (hi2c->Instance != I2C1) return;
+	i2c_events++;
 
 	if (!PARSECS_RingFull(&slave->l1_buffer_rx))
 	{
@@ -789,6 +798,7 @@ void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c)
 void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	if (hi2c->Instance != I2C1) return;
+	i2c_events++;
 
 	if (phase == PHASE_TRANSMIT)
 	{
@@ -864,7 +874,38 @@ void PARSECS_LAYER1(SLAVE *slave)
 		i2c_resync("error");
 	}
 
-	if (slave_stuck())
+	/* slave_stuck() samples the lines, BUSY and the HAL state once per tick.
+	 * Each of its conditions is also true for a few us inside any normal
+	 * round, and the slave tick drifts against the master's rounds (separate
+	 * crystals, ~20 us/s), so for tens of ms at a time every sample can land
+	 * inside a round. The condition alone then looked like a 5 ms hang and the
+	 * resync reset the peripheral in the middle of a transfer (NACKed read
+	 * address, lost byte). A real hang also stops the I2C callbacks, so a
+	 * stuck tick now only counts when no callback ran since the last tick. */
+	uint32_t events_now = i2c_events;
+	bool progress = (events_now != stuck_last_events);
+	bool stuck_now = slave_stuck();
+	stuck_last_events = events_now;
+
+#ifdef PARSECS_SLAVE_I2C_DIAG
+	if (stuck_now)
+	{
+		if (++old_rule_ticks > SLAVE_STUCK_TICKS)
+		{
+			old_rule_ticks = 0U;
+			if (progress || (stuck_ticks < SLAVE_STUCK_TICKS))
+			{
+				diag.stuck_filtered++;
+			}
+		}
+	}
+	else
+	{
+		old_rule_ticks = 0U;
+	}
+#endif
+
+	if (stuck_now && !progress)
 	{
 		if (++stuck_ticks > SLAVE_STUCK_TICKS)
 		{
@@ -925,11 +966,12 @@ void PARSECS_Layer1_DiagReport(void)
 	           (unsigned long)now.err_other, (unsigned long)now.listen_fail,
 	           (unsigned long)now.rx_arm_fail, (unsigned long)now.tx_arm_fail,
 	           (unsigned long)now.rx_lost, (unsigned long)now.ack_off_rx, (unsigned long)now.ack_off_tick);
-	LOG_SERIAL("[Slave]  diag resync=%lu/%lu/%lu stuck=%lu/%lu/%lu/%lu state=0x%02lX\n",
+	LOG_SERIAL("[Slave]  diag resync=%lu/%lu/%lu stuck=%lu/%lu/%lu/%lu filtered=%lu state=0x%02lX\n",
 	           (unsigned long)now.resync_error, (unsigned long)now.resync_stuck,
 	           (unsigned long)now.resync_errors, (unsigned long)now.stuck_flag,
 	           (unsigned long)now.stuck_state, (unsigned long)now.stuck_scl,
-	           (unsigned long)now.stuck_busy, (unsigned long)now.last_state);
+	           (unsigned long)now.stuck_busy, (unsigned long)now.stuck_filtered,
+	           (unsigned long)now.last_state);
 #endif
 }
 
