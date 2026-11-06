@@ -25,7 +25,7 @@ Contains the array of slave modules used by the PARSECS Low Level Substack to op
 SLAVE slaves[SLAVE_COUNT];
 #ifdef SPI_MASTER
 /*! \var number_of_active_slaves
-A private variable containing the current number of configured slaves in the PARSECS stack. This variable is updated when the users calls the function \ref PARSECS_Add_Slave
+A private variable containing the number of slaves the master currently polls (hot-plug state LINKING or ACTIVE). Updated by the hot-plug code in PARSECS_HotPlug.c
 \private
 */
 uint8_t number_of_active_slaves = 0;
@@ -74,6 +74,40 @@ void PARSECS_ARQ_Reset(SLAVE *slave)
 	slave->link_state = PARSECS_LINK_UP;
 	slave->last_delivered_rx_seq = 0;
 	slave->rx_seq_valid = false;
+	slave->arq_type = TYPE_DATA;
+}
+
+//! Restarts the link state of one peer after it asked for it with a \ref PARSECS_CMD_LINK_RESET frame.
+//!
+//! Called by Layer 3 RX (task context). The Layer 1 rings and the Layer 2 TX state machine are left
+//! alone, because the Layer 1 ISR may be in the middle of a byte: whatever Layer 2 is still sending
+//! goes out, but is marked \ref FG_ARQ_STALE_TX so it is not waited for. DATA already handed to the
+//! High Level and not read yet is dropped. The CMD SEQ becomes the last delivered SEQ, so a resent
+//! CMD is not taken for the peer's first DATA frame.
+//! \param slave The peer that sent the CMD
+//! \param cmd_seq SEQ of the CMD frame
+//! \return None
+//! \private
+void PARSECS_Link_Reset_Local(SLAVE *slave, uint8_t cmd_seq)
+{
+	if ((slave->STATUS_FLAG & FG_HL_NDF_1) != 0)
+	{
+		slave->spi_packet_rx_1.packet_ok = 0;
+	}
+	if ((slave->STATUS_FLAG & FG_HL_NDF_2) != 0)
+	{
+		slave->spi_packet_rx_2.packet_ok = 0;
+	}
+	slave->STATUS_FLAG &= ~(FG_ARQ_WAIT_ACK | FG_ARQ_RETX | FG_HL_FTTR | FG_ACK | FG_NACK | FG_HL_NDF_1 | FG_HL_NDF_2);
+	if ((slave->STATUS_FLAG & (FG_LL_FTT | FG_LL_FTIP)) != 0)
+	{
+		slave->STATUS_FLAG |= FG_ARQ_STALE_TX;
+	}
+	PARSECS_ARQ_Reset(slave);
+	slave->last_delivered_rx_seq = cmd_seq;
+	slave->rx_seq_valid = true;
+	slave->link_sync_pending = false;
+	slave->link_resets++;
 }
 
 //! Function used to initialize all the internal structures and variables of the PARSECS Stack
@@ -95,6 +129,9 @@ void PARSECS_Data_Init()
 		CRC16_constructor(&slaves[i].spi_packet_rx_2.crc16_object);			// instantiez crc-ul pentru receptie
 		CRC16_constructor(&slaves[i].spi_packet_tx.crc16_object);			//instantiez crc-ul pentru transmisie
 		slaves[i].slave_enabled = 1;
+		slaves[i].hp_state = PARSECS_SLAVE_ACTIVE;
+		#else
+		slaves[i].hp_state = PARSECS_SLAVE_ABSENT;
 		#endif
 	}
 	#ifdef SPI_MASTER

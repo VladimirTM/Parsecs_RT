@@ -24,6 +24,10 @@ int8_t PARSECS_Protocol_USER_Send(PARSECS_APP_BOARD_ADDRESS boardAddress, uint8_
 void PARSECS_Protocol_Interface_Task_Init(void);
 
 void PARSECS_Protocol_Interface_Task_Slave(PARSECS_PROTOCOL_BOARD_DESCRIPTOR *wit_board);
+void PARSECS_Protocol_Interface_Sync_Board(PARSECS_PROTOCOL_BOARD_DESCRIPTOR *wit_board);
+
+bool PARSECS_Protocol_Board_Available(PARSECS_APP_BOARD_ADDRESS boardAddress);
+int8_t PARSECS_Protocol_Board_State(PARSECS_APP_BOARD_ADDRESS boardAddress);
 
 #endif
 

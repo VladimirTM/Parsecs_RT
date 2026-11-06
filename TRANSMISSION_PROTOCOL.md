@@ -72,8 +72,10 @@ passed its CRC check.
   `FG_HL_FTTR`. L3 TX turns that into a DATA frame (`FG_LL_FTT`) with a new
   SEQ, unless an ACK is pending (ACK wins) or the previous frame is still
   unacknowledged.
-- TX priority each tick: ACK, NACK, CMD, retransmission, new DATA. Sending an
-  ACK or NACK does not discard a queued DATA frame.
+- TX priority each tick: ACK, NACK, retransmission, new frame. A new frame is
+  DATA from `PARSECS_TRANSMIT_APP` or the link reset CMD (see
+  [Hot-plug](#hot-plug)); both wait in `arq_buffer` and use the same ARQ.
+  Sending an ACK or NACK does not discard a queued frame.
 - L3 RX: a good DATA frame sets `FG_ACK` and, unless it is a duplicate,
   `FG_HL_NDF_*`. `PARSECS_RECEIVE_APP` returns the DATA payload. The High Level
   job is the only caller; the demo must not steal it.
@@ -133,6 +135,104 @@ Layer 3 and the Low Level API of two nodes over a simulated Layer 1. They cover
 clean delivery, lost DATA, CRC corruption, lost ACK, an absent peer and
 recovery, SEQ wrap, a stale ACK, queued data behind an ACK, a long peer frame,
 and `PARSECS_Reset_Link`.
+
+## Hot-plug
+
+The master finds slaves at run time and stops polling the ones that are gone.
+`PARSECS_Protocol_Interface_Task_Init` gives every known I2C address a slot:
+
+| I2C | Board | `PARSECS_SLAVE_INDEX` | Demo value |
+|---|---|---|---|
+| `0x08` | comm (`CORE_TX_WIT_COMM_BOARD`) | 0 | 42 |
+| `0x09` | mobility | 1 | 43 |
+| `0x0A` | pm (`CORE_TX_WIT_PM_BOARD`) | 2 | 44 |
+| `0x0B`..`0x0E` | board2..board5 (`CORE_TX_WIT_BOARD_NA2..5`) | 3..6 | 45..48 |
+
+Each slot is in one of three states (`PARSECS_SLAVE_STATE`,
+`PARSECS/PARSECS_HotPlug.c`):
+
+    ABSENT --(HOTPLUG_ADD_OK_ROUNDS good probes in a row)--> LINKING
+    LINKING --(link reset CMD ACKed)--> ACTIVE
+    LINKING --(CMD dropped by the ARQ, or HOTPLUG_REMOVE_FAIL_ROUNDS failed rounds)--> ABSENT
+    ACTIVE --(HOTPLUG_REMOVE_FAIL_ROUNDS failed rounds in a row)--> ABSENT
+
+All slots start ABSENT, so the boot order of the boards does not matter.
+
+**Round-robin (auto-scale).** `PARSECS_LowLevelTask` serves one slot per tick
+and walks only LINKING and ACTIVE slots. With N of them each one gets every Nth
+tick: one slave alone gets all of them (about 1 kB/s instead of 500 B/s), and an
+unplugged one costs nothing after it is taken out. All Low Level timers count
+rounds or calls of that slave, not milliseconds (ARQ RTO, L2 RX idle
+watchdog), so they follow the new rate on their own. A slave answers its bytes
+from the ISR and drains its whole RX ring every tick, so one round per tick is
+within what it can take.
+
+**Probes.** While some slot is ABSENT, one tick in `HOTPLUG_PROBE_PERIOD_TICKS`
+(20, so 5 % of the ticks) is a probe instead of a data round; with no slave
+polled at all every tick probes. A probe is a normal Layer 1 round (write,
+repeated START, read) to the absent address with a dummy `0x00` out; the byte
+read back is dropped and no ring, `l1_rounds` or bus error statistic is
+touched, so a probe that is NACKed (nobody there) does not count towards
+`MAX_CONSEC_ERRORS` or the 8-of-32 window resync. Probes rotate over the absent
+slots; a slot that answered its last probe is probed again on the next probe
+tick, so a new board is confirmed in `HOTPLUG_ADD_OK_ROUNDS` probe ticks.
+With all slots ACTIVE no probes are sent.
+
+**Removal.** Layer 1 keeps two saturating counters per slot, written from the
+I2C ISR: `hp_ok_streak` and `hp_fail_streak` (address NACK, bus error or round
+timeout). `HOTPLUG_REMOVE_FAIL_ROUNDS` (24) failed rounds in a row take the slot
+out. A healthy slave never comes close (the validation capture had 0 NACKs in
+120 814 rounds) and one resync costs a few rounds. With two slaves that is
+about 48 ms after the board is pulled.
+
+**Link reset (CMD `0x9B`).** A slave that comes back may have kept running
+while it was off the bus (old SEQs, an unACKed answer in its TX ring), and the
+master may have restarted. When a slot goes LINKING the master calls
+`PARSECS_Link_Sync_Start`: `PARSECS_Reset_Link` on its side, then a CMD frame
+through the ARQ:
+
+    7E 01 SEQ 9B 01 CRC16hi CRC16lo      # DATA[0] = PARSECS_CMD_LINK_RESET
+
+- The slave's Layer 3 runs `PARSECS_Link_Reset_Local`: drops its ARQ frame,
+  queued TX request and unread RX frames, and records the CMD SEQ as the last
+  delivered SEQ, so the master's first DATA (CMD SEQ + 1) is new. A frame that
+  Layer 2 is still sending is let out (the ISR may be inside it) but marked
+  `FG_ARQ_STALE_TX`, so the slave does not wait for its ACK. Then it ACKs the
+  CMD with its SEQ.
+- Until that ACK arrives (`link_sync_pending`), the master ACKs DATA from the
+  slave, so the slave stops resending it, but does not deliver it: it belongs
+  to the old link. `PARSECS_TRANSMIT_APP` stays busy, so no request leaves.
+- A resent CMD (lost ACK) resets again, which is harmless before any DATA.
+- No ACK after `ARQ_MAX_RETRIES` (for example a board with older firmware that
+  ACKs its address but not the CMD): LINK_DOWN, the slot goes back to ABSENT and
+  is probed again later.
+
+Both ends bump `SLAVE.link_resets` on every reset (`PARSECS_Get_Link_Epoch`).
+`PARSECS_Protocol_Interface_Task` re-initialises the board's L4 descriptor when
+it changes (half-assembled segments are dropped), and on the master marks the
+board available only while its slot is ACTIVE. `PARSECS_Protocol_USER_Send` /
+`USER_Receive` return `PARSECS_PROTOCOL_ERROR_BOARD_NOT_AVAILABLE` for any other
+state.
+
+API:
+
+| Function | Returns |
+|---|---|
+| `PARSECS_Get_Slave_State(id)` | `PARSECS_SLAVE_ABSENT` / `LINKING` / `ACTIVE` (always ACTIVE on a slave), -1 / -2 |
+| `PARSECS_Get_HotPlug_Stats(id, &added, &removed)` | 0, or -1 / -2 |
+| `PARSECS_Get_Link_Epoch(id)` | link reset counter |
+| `PARSECS_Link_Sync_Start(id)` | master only; 0, or -1 / -2 |
+| `PARSECS_HotPlug_Active_Count()` | slots in the round-robin |
+| `PARSECS_Protocol_Board_Available(board)` | true while USER_Send / USER_Receive accept the board |
+| `PARSECS_Protocol_Board_State(board)` | hot-plug state of the board's slot, -1 if not configured |
+
+Host tests: `make -C test/hotplug run`. The real Low Level task, hot-plug code,
+Layer 2/3 and Low Level API of the master run against boards with their own
+stack over a simulated Layer 1. They cover discovery at boot and on an empty
+bus, removal and the tick share after it, no probes when all boards are
+active, a board plugged in while the master polls, a flaky probe, a board
+that kept stale state while unplugged, a board that never ACKs the CMD, and
+two boards answering at the same time.
 
 ## Layer 4 / 6 / 7
 
@@ -237,6 +337,7 @@ to the next, is in [SALEAE.md](SALEAE.md).
 | `DUMMY_BYTE` | 0x00 | filler when `l1_buffer_tx` is empty |
 | Comm I2C address | 0x08 | `PARSECS_I2C_ADDR_COMM_7BIT`, slave index 0 |
 | Mobility I2C address | 0x09 | `PARSECS_I2C_ADDR_MOBILITY_7BIT`, slave index 1 |
+| Other I2C addresses | 0x0A..0x0E | pm, board2..board5, slave index 2..6 |
 | `TRANSACTION_TIMEOUT_TICKS` | 50 | master L1 watchdog, and hold wait |
 | `MAX_CONSEC_ERRORS` | 10 | errors before a resync |
 | `ARQ_MAX_RETRIES` | 3 | retransmissions before a frame is dropped |
@@ -244,10 +345,14 @@ to the next, is in [SALEAE.md](SALEAE.md).
 | `ARQ_RTO_MAX_ROUNDS` | 280 | timeout backoff cap |
 | `PARSECS_L1_FAULT_INJECT_EVERY` | undefined | test aid: corrupt every Nth L1 byte |
 | `SPI_DATA_LENGTH` | 254 | max L2 DATA payload |
-| `MAX_BOARD_COUNT` | 2 / 1 | master peers / one descriptor on a slave |
+| `MAX_BOARD_COUNT` | 7 / 1 | master: one per known I2C address / one descriptor on a slave |
+| `HOTPLUG_ADD_OK_ROUNDS` | 3 | good probes in a row before a slot is registered |
+| `HOTPLUG_REMOVE_FAIL_ROUNDS` | 24 | failed rounds in a row before a slot leaves the round-robin |
+| `HOTPLUG_PROBE_PERIOD_TICKS` | 20 | one probe tick in this many while some slot is absent |
+| `PARSECS_CMD_LINK_RESET` | `0x01` | DATA[0] of the link reset CMD frame |
 | `PARSECS_WIT_FRAME_LENGTH` | 1024 | L4 assembled WIT FRAME |
 | Demo TypeID | `0x01` | GetRequest / GetResponse |
-| Demo values | `42`, `43` | comm, mobility BER integers |
+| Demo values | `42`..`48` | comm, mobility, pm, board2..board5 BER integers |
 | `DEMO_SETTLE_MS` | 100 | ACK drain before the bus is held |
 | `DEMO_BUS_HOLD_MS` | 500 | SCL and SDA held low between repeats |
 | `DEMO_RESPONSE_TIMEOUT_MS` | 2000 | per-slave wait before FAIL |

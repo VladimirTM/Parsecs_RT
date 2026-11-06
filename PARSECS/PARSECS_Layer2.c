@@ -59,7 +59,7 @@ void PARSECS_TRANSMIT_LAYER2(SLAVE *slave)
 			}
 			case 2: // encode sequence number
 			{
-				if (slave->spi_packet_tx.packet_type == TYPE_DATA)
+				if ((slave->spi_packet_tx.packet_type == TYPE_DATA) || (slave->spi_packet_tx.packet_type == PARSECS_CMD))
 				{
 					// SEQ is assigned by Layer 3 so a retransmission reuses the original value
 					slave->last_transmitted_data_packet_sequence_number = slave->spi_packet_tx.seq_no;
@@ -108,7 +108,12 @@ void PARSECS_TRANSMIT_LAYER2(SLAVE *slave)
 				PARSECS_RingWriteOne(&slave->l1_buffer_tx, (uint8_t)(slave->uw_crc16 & 0xFF));
 				slave->STATUS_FLAG &= ~FG_LL_FTIP;  //resetez flagul de frame transmit in progress
 				slave->STATUS_FLAG &= ~FG_LL_FTT;   //resetez flagul de frame  to transmit			
-				if (slave->spi_packet_tx.packet_type == TYPE_DATA)
+				if ((slave->STATUS_FLAG & FG_ARQ_STALE_TX) != 0)
+				{
+					// encoded before a link reset: the peer no longer expects it, so do not wait for its ACK
+					slave->STATUS_FLAG &= ~FG_ARQ_STALE_TX;
+				}
+				else if ((slave->spi_packet_tx.packet_type == TYPE_DATA) || (slave->spi_packet_tx.packet_type == PARSECS_CMD))
 				{
 					// whole frame is in the L1 ring: start the ARQ retransmission timer
 					slave->STATUS_FLAG |= FG_ARQ_WAIT_ACK;
@@ -141,7 +146,7 @@ void PARSECS_TRANSMIT_LAYER2(SLAVE *slave)
 //! \private
 uint8_t PARSECS_RECEIVE_LAYER2_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet)
 { 
-	static uint8_t crc_byte_0, crc_byte_1; // iau crc-urile receptionate
+	uint8_t crc_byte_0; // al doilea byte de CRC receptionat
 	uint8_t word1;				   //variabila in care preiau cate un word din buffer-ul circular de receptie
 	uint16_t uw_CRC16;
 	uint16_t concatword;
@@ -157,8 +162,7 @@ uint8_t PARSECS_RECEIVE_LAYER2_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet)
 				{
 					packet->frame_in_progress = true; // setez flagul de frame in pending
 					slave->ub_L2_RecState = 1;		 //ma duc in starea urmatoare mi-a venit START OF FRAME
-					crc_byte_0 = 0x00;				 //restez  valorile de la crc-urile
-					crc_byte_1 = 0x00;
+					slave->ub_L2_RxCrcHigh = 0x00;	 //restez primul byte de CRC
 					uw_CRC16 =0x00;			//restez variabila in care calculez crc-urile
 					slave->uw_L2_ByteCount0 = 0;	//resetez index-ul de la date
 					packet->packet_ok = 0; // pun starea pachet-ul pe 0 , inca nu am un pachet bun
@@ -231,7 +235,9 @@ uint8_t PARSECS_RECEIVE_LAYER2_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet)
 			
 			case 5:
 			{ 
-				crc_byte_1 = word1;			// luam primul crc
+				// kept per slave: on the master the next byte of this frame comes
+				// a few calls later, after other slaves' frames went through here
+				slave->ub_L2_RxCrcHigh = word1;			// luam primul crc
 				slave->ub_L2_RecState = 6;	// mergem in starea 5
 				break;
 			}
@@ -239,7 +245,7 @@ uint8_t PARSECS_RECEIVE_LAYER2_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet)
 			case 6:
 			{
 				crc_byte_0 = word1; 							  // iau al doilea crc
-				concatword = ((crc_byte_1 << 8) | crc_byte_0); // concatenez cele 2 crc-uri
+				concatword = (uint16_t)(((uint16_t)slave->ub_L2_RxCrcHigh << 8) | crc_byte_0); // concatenez cele 2 crc-uri
 				uw_CRC16 = CRC16_GetCRC(&packet->crc16_object); //  iau crc-ul calculat
 				if (uw_CRC16 == concatword) // verific daca  sunt la fel crc-urile
 				{
@@ -247,8 +253,8 @@ uint8_t PARSECS_RECEIVE_LAYER2_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet)
 					packet->packet_ok = 1; //am un pachet bun
 					slave->ub_L2_RecState = 0;			//resetez automatul si ma duc in starea 0
 					slave->STATUS_FLAG &= ~FG_NACK;     // RESETEZ FALGUL DE NACK
-					// only a CRC-checked DATA SEQ may be echoed back in our ACK; an incoming ACK/NACK must not overwrite it
-					if (packet->packet_type == TYPE_DATA)
+					// only a CRC-checked DATA or CMD SEQ may be echoed back in our ACK; an incoming ACK/NACK must not overwrite it
+					if ((packet->packet_type == TYPE_DATA) || (packet->packet_type == PARSECS_CMD))
 					{
 						slave->last_received_packet_sequence_number = packet->seq_no;
 					}

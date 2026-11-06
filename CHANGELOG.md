@@ -1,5 +1,43 @@
 # Changelog
 
+## feature/slave-hotplug
+
+- Slave hot-plug on the master (`PARSECS/PARSECS_HotPlug.c`). Every known I2C
+  address (`0x08`..`0x0E`) has a slot that is ABSENT, LINKING or ACTIVE. All
+  start ABSENT, so the boards no longer have to be up before the master.
+- Auto-scale: the Low Level round-robin only walks LINKING and ACTIVE slots, so
+  a pulled board stops costing ticks and the others share all of them. A slot
+  that fails `HOTPLUG_REMOVE_FAIL_ROUNDS` (24) rounds in a row goes back to
+  ABSENT.
+- Probes: while a slot is ABSENT, one tick in `HOTPLUG_PROBE_PERIOD_TICKS` (20)
+  sends a probe round to its address (every tick when nothing is polled). It is
+  the usual write + repeated-START read with a dummy byte, does not touch the
+  rings, and a NACKed probe does not count as a bus error. Three good probes in
+  a row register the slot. `PARSECS_LAYER1_Probe` is the new Layer 1 entry.
+- Link reset: before a registered slot is used the master sends a `PARSECS_CMD`
+  (`0x9B`) frame with `PARSECS_CMD_LINK_RESET` through the ARQ
+  (`PARSECS_Link_Sync_Start`). The receiver restarts its link state
+  (`PARSECS_Link_Reset_Local`) and ACKs it; until then the master ACKs but drops
+  the slave's DATA. A slot whose CMD is never ACKed goes back to ABSENT. The
+  unused `FG_CMD` path in Layer 3 TX is gone; CMD frames now share `arq_buffer`
+  with DATA (`SLAVE.arq_type`), and an unknown frame type no longer keeps its RX
+  buffer marked in use.
+- High Level follows the Low Level: `PARSECS_Protocol_Interface_Task`
+  re-initialises a board's L4 descriptor when its link epoch changes and, on the
+  master, marks it available only while ACTIVE. New:
+  `PARSECS_Protocol_Board_Available`, `PARSECS_Protocol_Board_State`,
+  `PARSECS_Get_Slave_State`, `PARSECS_Get_Link_Epoch`, `PARSECS_Get_HotPlug_Stats`.
+  `MAX_BOARD_COUNT` on the master is 7.
+- Layer 2 RX keeps the first CRC byte per slave (`ub_L2_RxCrcHigh`) instead of in
+  a `static`. On the master, two slaves sending at the same time could overwrite
+  each other's CRC byte, fail the check and cost a retransmission (seen in the new
+  host test; the old demo never had two answers in flight).
+- Demo: the master asks every present board in turn, drops a wait when the board
+  is pulled out, and logs each hot-plug change. The slave logs a link reset and
+  forgets a request it had not answered. `slave_identity.h` has indexes 2..6
+  (pm, board2..board5 at `0x0A`..`0x0E`, values 44..48).
+- Host tests: `make -C test/hotplug run` (9 tests).
+
 ## feature/debug-logs-roundtrip-timing
 
 - Turned on the High Level layer logs that were already in the stack, ported
