@@ -26,6 +26,24 @@ static void i2c_cs_noop(void)
 {
 }
 
+//! Boards the master looks for. Each one gets a Low Level slot at init and is used once it answers
+//! on its address (hot-plug, see PARSECS_HotPlug.c). A slave image picks its entry with
+//! PARSECS_SLAVE_INDEX (slave_identity.h), in the same order.
+static const struct
+{
+	PARSECS_APP_BOARD_ADDRESS board;
+	uint8_t i2c_addr_7bit;
+} known_boards[MAX_BOARD_COUNT] =
+{
+	{ CORE_TX_WIT_COMM_BOARD,     PARSECS_I2C_ADDR_COMM_7BIT     },
+	{ CORE_TX_WIT_MOBILITY_BOARD, PARSECS_I2C_ADDR_MOBILITY_7BIT },
+	{ CORE_TX_WIT_PM_BOARD,       PARSECS_I2C_ADDR_PM_7BIT       },
+	{ CORE_TX_WIT_BOARD_NA2,      PARSECS_I2C_ADDR_BOARD2_7BIT   },
+	{ CORE_TX_WIT_BOARD_NA3,      PARSECS_I2C_ADDR_BOARD3_7BIT   },
+	{ CORE_TX_WIT_BOARD_NA4,      PARSECS_I2C_ADDR_BOARD4_7BIT   },
+	{ CORE_TX_WIT_BOARD_NA5,      PARSECS_I2C_ADDR_BOARD5_7BIT   },
+};
+
 static int8_t register_i2c_board(uint8_t slot, PARSECS_APP_BOARD_ADDRESS address, uint8_t i2c_addr_7bit)
 {
 	PARSECS_PROTOCOL_BOARD_DESCRIPTOR *board;
@@ -49,7 +67,10 @@ static int8_t register_i2c_board(uint8_t slot, PARSECS_APP_BOARD_ADDRESS address
 	board->boardAddress = address;
 	PARSECS_ProtocolDescriptorInit(&board->boardProtocolDescriptor);
 	PARSECS_ProtocolCommunicationInterfaceInit(&board->boardProtocolInterface);
-	board->boardAvailable = true;
+	board->boardLinkEpoch = PARSECS_Get_Link_Epoch((uint8_t)slave_id);
+	board->boardConfigured = true;
+	// becomes available when the hot-plug code reports the slave ACTIVE
+	board->boardAvailable = false;
 	return 0;
 }
 #endif
@@ -88,8 +109,11 @@ void I2C_Print_Raw_Packet(uint8_t sequence_number, uint8_t size)
 void PARSECS_Protocol_Interface_Task_Init()
 {
 #ifdef SPI_MASTER
-	(void)register_i2c_board(0U, CORE_TX_WIT_COMM_BOARD, PARSECS_I2C_ADDR_COMM_7BIT);
-	(void)register_i2c_board(1U, CORE_TX_WIT_MOBILITY_BOARD, PARSECS_I2C_ADDR_MOBILITY_7BIT);
+	uint8_t i;
+	for (i = 0U; i < MAX_BOARD_COUNT; i++)
+	{
+		(void)register_i2c_board(i, known_boards[i].board, known_boards[i].i2c_addr_7bit);
+	}
 #else
 	PARSECS_PROTOCOL_BOARD_DESCRIPTOR *board = &CORE_TX_Wit_Boards[0];
 
@@ -97,8 +121,58 @@ void PARSECS_Protocol_Interface_Task_Init()
 	board->boardAddress = CORE_TX_WIT_MOTHERBOARD;
 	PARSECS_ProtocolDescriptorInit(&board->boardProtocolDescriptor);
 	PARSECS_ProtocolCommunicationInterfaceInit(&board->boardProtocolInterface);
+	board->boardLinkEpoch = PARSECS_Get_Link_Epoch(0U);
+	board->boardConfigured = true;
 	board->boardAvailable = true;
 #endif
+}
+
+//! Keeps one board descriptor in step with the Low Level state of its slave
+//!
+//! A new link epoch means the link was restarted (master: slave registered again; slave: the master
+//! asked for a link reset), so half-assembled segments and queued frames of the old link are dropped.
+//! On the master the board is available only while its slave is ACTIVE.
+//! \param wit_board The board descriptor
+//! \return None
+//! \private
+void PARSECS_Protocol_Interface_Sync_Board(PARSECS_PROTOCOL_BOARD_DESCRIPTOR *wit_board)
+{
+	uint8_t slave_id = (uint8_t)wit_board->boardSlaveID;
+	uint32_t epoch = PARSECS_Get_Link_Epoch(slave_id);
+
+	if (epoch != wit_board->boardLinkEpoch)
+	{
+		PARSECS_ProtocolDescriptorInit(&wit_board->boardProtocolDescriptor);
+		PARSECS_ProtocolCommunicationInterfaceInit(&wit_board->boardProtocolInterface);
+		wit_board->boardLinkEpoch = epoch;
+	}
+#ifdef SPI_MASTER
+	wit_board->boardAvailable = (PARSECS_Get_Slave_State(slave_id) == PARSECS_SLAVE_ACTIVE);
+#endif
+}
+
+//! Tells whether a board can be used now (on the master: its slave answers and its link is up)
+//! \param boardAddress The board address
+//! \return true if \ref PARSECS_Protocol_USER_Send / \ref PARSECS_Protocol_USER_Receive will accept it
+bool PARSECS_Protocol_Board_Available(PARSECS_APP_BOARD_ADDRESS boardAddress)
+{
+	return PARSECS_BoardByAddress(boardAddress) != NULL;
+}
+
+//! Hot-plug state of the slave behind a board
+//! \param boardAddress The board address
+//! \return \ref PARSECS_SLAVE_ABSENT, \ref PARSECS_SLAVE_LINKING or \ref PARSECS_SLAVE_ACTIVE, or -1 if the board is not configured
+int8_t PARSECS_Protocol_Board_State(PARSECS_APP_BOARD_ADDRESS boardAddress)
+{
+	uint8_t i;
+	for (i = 0U; i < MAX_BOARD_COUNT; i++)
+	{
+		if ((CORE_TX_Wit_Boards[i].boardConfigured == true) && (CORE_TX_Wit_Boards[i].boardAddress == boardAddress))
+		{
+			return PARSECS_Get_Slave_State((uint8_t)CORE_TX_Wit_Boards[i].boardSlaveID);
+		}
+	}
+	return -1;
 }
 //! Function used to implement the PARSECS High Level Task at board level. This function should be called for each configured board. This function is called by the general task and should not be called by the user
 //!

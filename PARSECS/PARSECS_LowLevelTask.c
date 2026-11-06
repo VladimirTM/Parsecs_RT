@@ -16,6 +16,7 @@
 #include "PARSECS_Layer1.h"
 #include "PARSECS_Layer2.h"
 #include "PARSECS_Layer3.h"
+#include "PARSECS_HotPlug.h"
 
 
 //! Initialization function for the PARSECS Low Level Substack. This function should be called by the operating system before any execution of the job represented by \ref PARSECS_LowLevelTask
@@ -24,6 +25,9 @@ void PARSECS_LowLevelTaskInit(void)
 {
 	PARSECS_Layer1_Init();
 	PARSECS_Data_Init();
+#ifdef SPI_MASTER
+	PARSECS_HotPlug_Init();
+#endif
 }
 
 //! The entry point of the PARSECS Low Level Substack. This function implements the actual job of the task.
@@ -36,11 +40,23 @@ void PARSECS_LowLevelTask(void)
 	static uint8_t i = 0;
 	uint8_t j = 0;
 	uint8_t slave_processed_during_modx_execution = 0;
+	SLAVE *probe;
+
+	// Hot-plug: only LINKING/ACTIVE slaves are in the round-robin, so each of the N polled slaves gets
+	// every Nth tick and an unplugged one costs nothing. A probe tick replaces one normal tick.
+	PARSECS_HotPlug_Task();
+	probe = PARSECS_HotPlug_Probe_Target();
+	if (probe != NULL)
+	{
+		PARSECS_LAYER1_Probe(probe);
+		return;
+	}
+
 	if (number_of_active_slaves > 0)
 	{
 		while (!slave_processed_during_modx_execution)
 		{
-			if (slaves[i].slave_enabled == 1)
+			if ((slaves[i].slave_enabled == 1) && (slaves[i].hp_state != PARSECS_SLAVE_ABSENT))
 			{
 				PARSECS_TRANSMIT_LAYER3(&slaves[i]);
 				PARSECS_TRANSMIT_LAYER2(&slaves[i]);

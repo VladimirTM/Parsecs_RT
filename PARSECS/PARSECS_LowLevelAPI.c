@@ -59,6 +59,7 @@ int8_t PARSECS_TRANSMIT_APP(uint8_t slave_id ,uint8_t *data, uint8_t data_length
 		// Layer 3 copies arq_buffer into spi_packet_tx, so a pending ACK/NACK cannot overwrite it
 		memcpy(slaves[slave_id].arq_buffer, data , data_length);//copiez in buffer data ce vreau sa transmit
 		slaves[slave_id].arq_length = data_length;
+		slaves[slave_id].arq_type = TYPE_DATA;
 		slaves[slave_id].STATUS_FLAG |= FG_HL_FTTR;// setez flag intre hl si layer 3 transmit
 		if (sent_sequence_number != NULL)
 		{
@@ -222,7 +223,9 @@ int8_t PARSECS_RECEIVE_APP(uint8_t slave_id, uint8_t *data, uint8_t *data_length
 //!
 //! This function is only available for the Master node and it is called by the user to add a new slave to the PARSECS Low Leve Substack.
 //! The function will require function pointers to functions which toggle the slave select pin. This function will return an integer number representing a unique identifier
-//! of the slave in the PARSERCS Low Level Substack. This id will be then used to call other functions of the PARSECS Low Level Substack
+//! of the slave in the PARSERCS Low Level Substack. This id will be then used to call other functions of the PARSECS Low Level Substack.
+//! The slave starts \ref PARSECS_SLAVE_ABSENT: Layer 1 only probes it, and the hot-plug code adds it to the
+//! round-robin once it answers (see PARSECS_HotPlug.c).
 //! \param SelectFunctionPointer A pointer to a function of type SPI_SLAVE_FUNCTION that selects the slave (toggles the SSEL to low). The function must be void with no parameters
 //! \param DeselectFunctionPointer A pointer to a function of type SPI_SLAVE_FUNCTION that deselects the slave (toggles the SSEL to high). The function must be void with no parameters
 //! \return -1 on error
@@ -254,7 +257,10 @@ int8_t PARSECS_Add_Slave(SPI_SLAVE_FUNCTION SelectFunctionPointer, SPI_SLAVE_FUN
 			slaves[i].ub_L2_TransState = 0;  // state pt layer 2 transmit
 			slaves[i].layer2_transmit_packet_index = 0; 
 			PARSECS_ARQ_Reset(&slaves[i]);
-			number_of_active_slaves++;
+			slaves[i].link_sync_pending = false;
+			slaves[i].hp_state = PARSECS_SLAVE_ABSENT;
+			slaves[i].hp_ok_streak = 0;
+			slaves[i].hp_fail_streak = 0;
 			return i;
 		}
 	}
@@ -431,6 +437,98 @@ int8_t PARSECS_Reset_Link(uint8_t slave_id)
 	slave->last_ACKed_packet_sequence_number = 0;
 	slave->last_NACKed_packet_sequence_number = 0;
 	PARSECS_ARQ_Reset(slave);
+	slave->link_sync_pending = false;
+	slave->link_resets++;
+	return 0;
+}
+
+#ifdef SPI_MASTER
+//! Restart the link of a slave on both ends
+//!
+//! Resets the master side with \ref PARSECS_Reset_Link, then queues a \ref PARSECS_CMD frame carrying
+//! \ref PARSECS_CMD_LINK_RESET through the ARQ. Until that CMD is ACKed the slave cannot get new DATA
+//! (\ref PARSECS_CHECK_APP_TX_READY stays busy) and DATA coming from it is ACKed but dropped, because it
+//! may be left over from before the slave was unplugged. Called by the hot-plug code when a slave is
+//! registered; the slave must not be in the middle of a Layer 1 round (an ABSENT slave never is).
+//! \param slave_id The unique slave identifier obtained by calling \ref PARSECS_Add_Slave
+//! \return 0 on success
+//! \return -1 in case an out of range slave_id is given
+//! \return -2 in case the slave_id parameter points to an inexistant or uninitialized slave
+int8_t PARSECS_Link_Sync_Start(uint8_t slave_id)
+{
+	int8_t result = PARSECS_Reset_Link(slave_id);
+	SLAVE *slave;
+
+	if (result != 0)
+	{
+		return result;
+	}
+	slave = &slaves[slave_id];
+	slave->arq_buffer[0] = PARSECS_CMD_LINK_RESET;
+	slave->arq_length = 1;
+	slave->arq_type = PARSECS_CMD;
+	slave->link_sync_pending = true;
+	slave->STATUS_FLAG |= FG_HL_FTTR;
+	return 0;
+}
+#endif
+
+//! Get the hot-plug state of a slave
+//! \param slave_id The unique slave identifier obtained by calling \ref PARSECS_Add_Slave (0 on a slave node)
+//! \return -1 in case an out of range slave_id is given
+//! \return -2 in case the slave_id parameter points to an inexistant or uninitialized slave
+//! \return \ref PARSECS_SLAVE_ABSENT, \ref PARSECS_SLAVE_LINKING or \ref PARSECS_SLAVE_ACTIVE (always ACTIVE on a slave node)
+int8_t PARSECS_Get_Slave_State(uint8_t slave_id)
+{
+	if (slave_id >= SLAVE_COUNT)
+	{
+		return -1;
+	}
+	if (slaves[slave_id].slave_enabled == false)
+	{
+		return -2;
+	}
+	return (int8_t)slaves[slave_id].hp_state;
+}
+
+//! Get the link epoch of a slave: a counter bumped by every link reset (local or asked by the peer)
+//!
+//! Anything kept above the Low Level for this peer (half-assembled segments, a request being answered)
+//! is stale once the value changes.
+//! \param slave_id The unique slave identifier obtained by calling \ref PARSECS_Add_Slave (0 on a slave node)
+//! \return the epoch, or 0 for an out of range slave_id
+uint32_t PARSECS_Get_Link_Epoch(uint8_t slave_id)
+{
+	if (slave_id >= SLAVE_COUNT)
+	{
+		return 0;
+	}
+	return slaves[slave_id].link_resets;
+}
+
+//! Get the hot-plug diagnostic counters of a slave
+//! \param slave_id The unique slave identifier obtained by calling \ref PARSECS_Add_Slave
+//! \param[out] added Times the slave became ACTIVE. May be NULL
+//! \param[out] removed Times the slave was taken out of the round-robin. May be NULL
+//! \return 0 on success, -1 / -2 as \ref PARSECS_Get_Slave_State
+int8_t PARSECS_Get_HotPlug_Stats(uint8_t slave_id, uint32_t *added, uint32_t *removed)
+{
+	if (slave_id >= SLAVE_COUNT)
+	{
+		return -1;
+	}
+	if (slaves[slave_id].slave_enabled == false)
+	{
+		return -2;
+	}
+	if (added != NULL)
+	{
+		*added = slaves[slave_id].hp_added;
+	}
+	if (removed != NULL)
+	{
+		*removed = slaves[slave_id].hp_removed;
+	}
 	return 0;
 }
 

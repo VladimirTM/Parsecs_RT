@@ -64,7 +64,8 @@
 #define FG_LL_FUSE_2			0x10000000 //Frame in use in buffer 2 - currently implemented using slave[i].spi_packet_rx_1.packet_ok
 #define FG_HL_FTTR	 			0x02000000 //High Level Frame to Transmit - comunicatie high level stack transmit cu layer 3/2 transmit
 #define FG_ARQ_WAIT_ACK			0x01000000 //ARQ: DATA frame fully handed to Layer 1, waiting for its ACK
-#define FG_ARQ_RETX				0x00800000 //ARQ: the stored DATA frame must be sent again (NACK or timeout)
+#define FG_ARQ_RETX			0x00800000 //ARQ: the stored DATA frame must be sent again (NACK or timeout)
+#define FG_ARQ_STALE_TX			0x00400000 //ARQ: the frame Layer 2 is sending predates a link reset, do not wait for its ACK
 #define FG_LL_FTT 				0x00040000 //Low Level FRAME  TO TRANSMIT
 #define	FG_LL_FTIP				0x00020000 //Low Level FRAME TRANSMIT IN PROGRESS
 #define FG_ACK					0x00008000 //ACK
@@ -78,20 +79,27 @@
 /*!
  * \def SLAVE_COUNT
  * Defines the number of maximum Low Level slaves supported. The master table
- * is large enough for every WIT peer; this I2C port registers two of them.
+ * is large enough for every WIT peer. The master registers one slot per known
+ * I2C address at init; the hot-plug code decides which of them are polled.
  */
 /*!
  * \def MAX_BOARD_COUNT
- * High Level board table size. The master has two I2C peers (comm and
- * mobility). A slave image has one local descriptor.
+ * High Level board table size. The master has one descriptor per known I2C
+ * address (0x08..0x0E, see PARSECS_Protocol_Interface.c), present or not.
+ * A slave image has one local descriptor.
  * USER_Send / USER_Receive look up the descriptor by APP board address, they
  * do not use the WIT enum as an array index (CORE_TX_WIT_COMM_BOARD is 6).
  */
 #define PARSECS_I2C_ADDR_COMM_7BIT		0x08U
 #define PARSECS_I2C_ADDR_MOBILITY_7BIT	0x09U
+#define PARSECS_I2C_ADDR_PM_7BIT		0x0AU
+#define PARSECS_I2C_ADDR_BOARD2_7BIT	0x0BU
+#define PARSECS_I2C_ADDR_BOARD3_7BIT	0x0CU
+#define PARSECS_I2C_ADDR_BOARD4_7BIT	0x0DU
+#define PARSECS_I2C_ADDR_BOARD5_7BIT	0x0EU
 #ifdef SPI_MASTER
 #define SLAVE_COUNT 				8
-#define MAX_BOARD_COUNT				2
+#define MAX_BOARD_COUNT				7
 #else
 #define SLAVE_COUNT					1
 #define MAX_BOARD_COUNT				1
@@ -148,6 +156,34 @@
 #define ARQ_RTO_ROUNDS				((2U * RAW_RING_BUFFER_SIZE) + DATA_ENCODING_SIZE + ARQ_RTO_MARGIN_ROUNDS)
 #define ARQ_RTO_MAX_ROUNDS			(4U * ARQ_RTO_ROUNDS)
 
+/*!
+ * \def PARSECS_CMD_LINK_RESET
+ * First DATA byte of a \ref PARSECS_CMD frame that asks the peer to restart its link state.
+ * The master sends it, through the ARQ, every time it (re)registers a slave.
+ */
+#define PARSECS_CMD_LINK_RESET		0x01U
+
+/*!
+ * \def HOTPLUG_ADD_OK_ROUNDS
+ * Consecutive good probe rounds before an absent slave is registered again
+ */
+/*!
+ * \def HOTPLUG_REMOVE_FAIL_ROUNDS
+ * Consecutive rounds of one slave NACKed at the address (HAL ErrorCode exactly AF) before it is
+ * taken out of the round-robin. Timeouts and bus errors do not count: they come from the bus (often
+ * another board being plugged in), not from this slave being gone.
+ * A healthy slave fails no rounds in a row (0 NACKs in 120 000 rounds on the bench), and one
+ * resync costs a few rounds, so 24 only trips when the slave is really gone.
+ */
+/*!
+ * \def HOTPLUG_PROBE_PERIOD_TICKS
+ * While at least one slave is active, one Low Level tick out of this many probes an absent slave
+ * instead of serving an active one. With no active slave every tick probes.
+ */
+#define HOTPLUG_ADD_OK_ROUNDS		3U
+#define HOTPLUG_REMOVE_FAIL_ROUNDS	24U
+#define HOTPLUG_PROBE_PERIOD_TICKS	20U
+
 /*! \page PARSECS_RT_Buffer_size_restrictions
  * Restrictions that apply on the size of the buffers
 -# \f$ SPI\_DATA\_LENGTH >= 4 \f$
@@ -171,6 +207,13 @@ typedef enum
 	PARSECS_LINK_UP = 0,		/**<The last DATA frame was acknowledged (or nothing was sent yet)*/
 	PARSECS_LINK_DOWN = 1,		/**<A DATA frame was dropped after \ref ARQ_MAX_RETRIES retransmissions*/
 }PARSECS_LINK_STATE;
+
+typedef enum
+{
+	PARSECS_SLAVE_ABSENT = 0,	/**<Not answering: out of the round-robin, only probed now and then*/
+	PARSECS_SLAVE_LINKING = 1,	/**<Answering again: in the round-robin, waiting for the ACK of the link reset CMD*/
+	PARSECS_SLAVE_ACTIVE = 2,	/**<In the round-robin and usable by the High Level*/
+}PARSECS_SLAVE_STATE;
 
 
 //! \struct SPI_BASE_FRAME
@@ -206,6 +249,7 @@ typedef struct
 	volatile uint8_t ub_L2_TransState;  							/**<Layer 2 transmission state machine current state*/
 	uint16_t layer2_transmit_packet_index; 							/**<Layer 2 transmission data index*/
 	uint8_t uw_L2_ByteCount0;										/**<Layer 2 reception data index*/
+	uint8_t ub_L2_RxCrcHigh;										/**<Layer 2 reception: first CRC byte of the frame being received*/
 	uint8_t ub_L2_RecIdleCalls;										/**<Layer 2 reception calls in a row with a frame in progress and no new byte*/
 	bool slave_enabled;												/**<States if the slave structure is enabled, configured and valid*/
 	uint8_t buff_rx1[RAW_RING_BUFFER_SIZE];							/**<Layer 1 memory zone for ring buffer for rx*/
@@ -229,6 +273,14 @@ typedef struct
 	bool rx_seq_valid;												/**<last_delivered_rx_seq holds a real value*/
 	uint32_t arq_retransmissions;									/**<Diagnostic: total retransmitted DATA frames*/
 	uint32_t arq_link_down_events;									/**<Diagnostic: total frames dropped after ARQ_MAX_RETRIES*/
+	uint8_t arq_type;												/**<ARQ: TYPE of the stored frame, \ref TYPE_DATA or \ref PARSECS_CMD*/
+	bool link_sync_pending;											/**<Master: link reset CMD sent and not ACKed yet; DATA from the peer is ACKed but dropped*/
+	uint32_t link_resets;											/**<Bumped by every link reset; the High Level drops its state when it changes*/
+	PARSECS_SLAVE_STATE hp_state;									/**<Hot-plug state (always ACTIVE on a slave node)*/
+	volatile uint8_t hp_ok_streak;									/**<Hot-plug: consecutive completed rounds (Layer 1 ISR, saturates)*/
+	volatile uint8_t hp_fail_streak;								/**<Hot-plug: consecutive address NACKs, reset by a good round (Layer 1 ISR, saturates)*/
+	uint32_t hp_added;												/**<Diagnostic: times the slave became ACTIVE*/
+	uint32_t hp_removed;											/**<Diagnostic: times the slave was taken out of the round-robin*/
 }SLAVE;
 
 /*!
@@ -419,7 +471,9 @@ typedef struct
 	PARSECS_Protocol_Communication_Interface boardProtocolInterface;	/**<Contains the communication interface used by one job execution of the protocol to communicate with the next job execution */
 	int8_t boardSlaveID;												/**<Contains the slave id relative to the PARSECS Low Level Substack obtained by calling \ref PARSECS_Add_Slave*/
 	PARSECS_APP_BOARD_ADDRESS boardAddress;								/**<Contains the board address of the WIT according to \ref PARSECS_APP_BOARD_ADDRESS*/
-	bool boardAvailable;												/**<Validity field. Validates the current instance of this structure */
+	bool boardAvailable;												/**<The board can be used now. On the master it follows the hot-plug state of its slave */
+	bool boardConfigured;												/**<The descriptor was set up at init (the board may still be absent) */
+	uint32_t boardLinkEpoch;											/**<link_resets of the slave when this descriptor was last initialized */
 }PARSECS_PROTOCOL_BOARD_DESCRIPTOR;
 
 
@@ -435,6 +489,7 @@ extern PARSECS_PROTOCOL_BOARD_DESCRIPTOR CORE_TX_Wit_Boards[MAX_BOARD_COUNT];
 void PARSECS_Data_Init(void);
 void PARSECS_InitRingBuffers(SLAVE *slave);
 void PARSECS_ARQ_Reset(SLAVE *slave);
+void PARSECS_Link_Reset_Local(SLAVE *slave, uint8_t cmd_seq);
 
 #endif
 
