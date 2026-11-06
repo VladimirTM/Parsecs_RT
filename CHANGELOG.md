@@ -1,5 +1,171 @@
 # Changelog
 
+## feature/debug-logs-roundtrip-timing
+
+- Turned on the High Level layer logs that were already in the stack, ported
+  from `coretx_commboard` / `coretx-motherboard`: L3 raw `I2C ->/<-`, L4 WIT
+  `I2C_WIT ->/<-` and protocol errors, and L7 `I2C USER ->/<-`. The debug
+  flags and log tags are renamed from `SPI_*` to `I2C_*`.
+  `I2C_PROTOCOL_DEBUG` is defined in `PARSECS_Debug.h`, and each sub-flag can be
+  switched on its own. `I2C_PROTOCOL_USER_FULL_BER_DEBUG` stays off.
+- `LOG_SERIAL` is now real (`PARSECS/log.c`, based on the coretx `log.c`). It
+  writes to USB CDC and does not initialise USB a second time.
+- `LOG_SERIAL` does not block. It formats the message into an 8 KB RAM ring
+  (`LOG_RING_SIZE`) and returns. A separate `logTask` (`LOG_TaskStart`,
+  created in both `freertos.c`) sends the ring to CDC in chunks of up to
+  `LOG_CHUNK_SIZE` bytes whenever the previous transfer has finished. Before
+  this, each log line could wait up to 10 ms for USB inside `myTestTask`, which
+  showed up on I2C as a ~70 ms pause at the start of every transaction. If the
+  ring is full (for example the COM port is not open), the message is dropped
+  and LD3 toggles. The demo's `usb_print` and the Layer 1 resync messages also
+  go through `LOG_SERIAL`, so nothing else writes to the CDC endpoint.
+- Master round-trip probe on PE7 (`TIMING_Pin`): it goes high when a
+  GetRequest is queued and low when the GetResponse arrives or the request
+  times out. The PASS/FAIL line also prints `rtt=<ms>` from `HAL_GetTick`.
+  With `I2C_PROTOCOL_DEBUG` on, the pulse only includes the time to format the
+  log lines, not the USB transfers.
+- Layer 1 recovers from a stuck bus without a manual reset. At boot a stray
+  START/STOP could make a slave hit a bus error. HAL then kept the handle in
+  `LISTEN`, so `HAL_I2C_EnableListen_IT` returned `HAL_BUSY` forever while the
+  peripheral still ACKed its address and held SCL low.
+  - Slave: `HAL_I2C_ErrorCallback` requests an immediate `i2c_resync()`. A
+    failed re-listen counts as an error. A watchdog resyncs when ADDR stays set,
+    or the handle stays in `BUSY_RX_LISTEN` / `BUSY_TX_LISTEN`, for more than
+    `SLAVE_STUCK_TICKS` (5 ms).
+  - Master: `i2c_resync()` runs `bus_recover()` between DeInit and Init. It
+    sends up to 9 SCL pulses until SDA is released, then a STOP. Layer 1 also
+    waits `L1_STARTUP_MS` (100 ms) after reset before the first round.
+  - Resync logs now print the HAL `ErrorCode`, e.g.
+    `[Slave]  L1 resync err=0x01` (0x01 BERR, 0x02 ARLO, 0x04 AF, 0x08 OVR).
+- `PARSECS_Protocol_USER_Receive` takes a new `GenericDataCapacity` argument
+  (the size of `GenericDataAsBER`), right after the buffer. Before, the
+  OperationData of a received frame was copied into the caller's buffer
+  without a length check, so a frame larger than the demo's 32-byte `ber_rx`
+  overwrote the memory after it. If the data does not fit, the call now
+  returns `PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED`, drops the frame and leaves the
+  buffer untouched. The demo passes `sizeof(ber_rx)`.
+- `PARSECS_Protocol_USER_Send` now counts the 13-14 byte presentation header
+  in the 1024-byte frame limit (`PARSECS_WIT_FRAME_LENGTH`). Before, the check
+  ran before the header was encoded, so payloads of 1011-1024 bytes were
+  accepted and wrote up to 14 bytes past `Transmission.WITData`. They now
+  return `PARSECS_PROTOCOL_ERROR_SIZE_EXCEEDED`.
+- A stack overflow now stops the board. `configCHECK_FOR_STACK_OVERFLOW` was
+  already 1, but `vApplicationStackOverflowHook` in both `freertos.c` was
+  empty, so the kernel carried on with corrupted memory. The hook now disables
+  interrupts and flashes LD3-LD6 fast forever. `pcTaskName` names the task in
+  the debugger.
+- New `heartbeatTask` (1 KB stack, both boards) logs `heartbeat <n>` once per
+  second. At the 5th beat it logs the stack high-water marks once, in free
+  words: `stack free words: myTestTask=.. logTask=.. heartbeat=..`. By then
+  `myTestTask` has run several round trips, so with `I2C_PROTOCOL_DEBUG` on
+  this is the worst case.
+- `LOG_SERIAL` can be called from any task. It suspends the scheduler while
+  it formats into the shared `fmt_buf` and copies to the ring. Interrupts keep
+  running. It must still not be called from an ISR.
+- The slave recovers from a clock stretch that never ends. After a few
+  minutes of traffic a slave could hold SCL low forever. The master then saw
+  only AF (0x04) and resynced in a loop, while the slave watchdog never fired,
+  so only a board reset helped. `slave_stuck()` now also resyncs after
+  `SLAVE_STUCK_TICKS` (5 ms) of:
+  - `BTF` set: the master ACKed the last byte, so the slave waits for a `DR`
+    write that the finished DMA never makes.
+  - SCL low with SDA high. Both lines low is the master's deliberate bus hold
+    and is ignored.
+  - `BUSY` set with both lines high, the STM32F40x locked-BUSY erratum
+    (ES0182).
+- Each Layer 1 resync on master and slave now also resets I2C1 from RCC
+  (`__HAL_RCC_I2C1_FORCE_RESET` / `RELEASE_RESET`) between `HAL_I2C_DeInit` and
+  `MX_I2C1_Init`, as part of that erratum workaround.
+- Slave resync logs are one line with the state captured before the reset:
+  `[Slave]  L1 resync (<error|stuck|errors>) err=.. sr1=.. sr2=.. st=.. scl=.. sda=..`.
+  SR1: ADDR 0x0002, BTF 0x0004, TXE 0x0080, AF 0x0400. SR2: BUSY 0x0002,
+  TRA 0x0004.
+- Fewer and shorter ~1.9 s round trips, still 1 byte per round. In a 300 s
+  logic-analyzer capture, about 10% of transactions were misframed (decoded
+  shifted by one bit, no START seen), mostly the read that started ~2 us after
+  the write's STOP. Twice the master stayed in that state for ~1.9 s, until
+  the 50 ms round timeout resynced it, because failures alternating with good
+  rounds never reached `MAX_CONSEC_ERRORS`.
+  - The master's write and read are one transaction with a repeated START
+    (`I2C_FIRST_FRAME` then `I2C_LAST_FRAME`) instead of STOP + START. The
+    STM32F40x repeated-START erratum only affects Standard mode at 88-100 kHz.
+  - The master resyncs when `ROUND_WINDOW_MAX_FAILS` (8) of the last 32 rounds
+    failed, at most once per `ROUND_WINDOW_HOLDOFF_MS` (250 ms). Log:
+    `[Master] L1 resync (window) err=..`.
+  - A TX byte leaves the ring only after it was transferred: on the master
+    when the slave ACKs it (`MasterTxCpltCallback`), on the slave when the
+    master's NACK ends the read (`ListenCpltCallback`). After a NACK or bus
+    error the same byte is sent again, so a resync no longer drops a byte from
+    the middle of a Layer 2 frame.
+  - Layer 2 RX drops a frame in progress, and requests a NACK, after
+    `L2_RX_IDLE_CALLS_MAX` (20) calls without a new byte, so a frame cut off
+    by a resync or a bus hold does not swallow the start of the next one.
+- With the changes above, a 220 s capture had no ~1.9 s events: the active
+  part of a demo cycle was 330 ms median and 388 ms max. The remaining spread
+  came from ~0.4 hung rounds per second, each a START followed 0.4 us later by
+  a STOP and then 50 ms of silence until the round timeout. For a 1-byte DMA
+  read HAL sets STOP in `I2C_Master_ADDR` and again in `I2C_DMAXferCplt`; when
+  the first STOP has already gone out, the second stays pending in `CR1` and
+  fires right after the next START. `start_round` now clears a pending STOP
+  while `BUSY` is clear, and `TRANSACTION_TIMEOUT_TICKS` is 5 (~5 ms) instead
+  of 50 for any other hung round.
+- I2C1 pins PB6/PB7 run at `GPIO_SPEED_FREQ_LOW` instead of `VERY_HIGH`
+  (master and slave, also in the `.ioc`). The fast SDA falling edge at the
+  repeated START coupled a ~10 ns low glitch onto SCL. A 600 s capture after the
+  change has no glitch on SCL.
+- USB `OTG_FS_IRQn` priority is 10 instead of 5 (master and slave, also in the
+  `.ioc`). I2C1 EV/ER and the I2C DMA streams stay at 5, so they preempt a
+  long USB CDC interrupt instead of waiting for it.
+- Slave stuck detection no longer resets a slave that is only busy. Found
+  with the diagnostics on `feature/slave-i2c-diagnostics` (PE7 pulses and
+  counters, not part of this branch):
+  - `slave_stuck()` sampled SCL/SDA, `BUSY` and the HAL state once per tick,
+    and each condition is also true for a few us inside a normal round. The
+    slave tick drifts against the master's rounds (separate crystals,
+    ~21 us/s), so every ~41 s it sat inside the rounds for tens of ms, the
+    condition held for 5 ticks and `i2c_resync()` reset the peripheral
+    mid-transfer: 8-24 rounds in a row with a NACKed read address, bytes ACKed
+    by the hardware but lost, `0xFF` reads. A stuck tick now only counts when
+    no I2C callback (`AddrCallback`, `SlaveRxCpltCallback`,
+    `ListenCpltCallback`) ran since the previous tick.
+  - The task read SR1 (and SR2 for the BUSY check). Reading SR1 with ADDR set
+    and then SR2 clears ADDR, and the HAL slave ISR reads SR2 first, so a task
+    read of SR1 just before the ISR made the ISR lose ADDR: no `AddrCallback`,
+    no TX DMA, SCL held for 12 ms until a resync, once every ~41 s. The stuck
+    check now reads the lines once from `GPIOB->IDR` and reads SR1/SR2 only
+    with interrupts off after SCL and SDA have stayed high for ~5 us; ADDR or
+    BTF left set show up as SCL held low.
+  - A 310 s capture after both changes: 123 396 complete rounds, no NACK, no
+    CRC error, no retransmission, no resync, every demo cycle active for
+    330 ms.
+
+### Layer 3 retransmission (ported from `feature/l3-retransmission`)
+
+- Layer 3 stop-and-wait ARQ per slave. The DATA frame is kept in
+  `SLAVE.arq_buffer` until an ACK with its SEQ arrives. A NACK resends it at
+  once. A timeout (`ARQ_RTO_ROUNDS`, 70 Layer 1 rounds of that slave) resends
+  it with doubling backoff, capped at `ARQ_RTO_MAX_ROUNDS`.
+  After `ARQ_MAX_RETRIES` (3) the frame is dropped and the slave reports
+  `PARSECS_LINK_DOWN` until a later frame is ACKed.
+- The timer counts `SLAVE.l1_rounds` (new; incremented in Layer 1) and pauses
+  while a peer frame is being received.
+- Receiver re-ACKs a repeated SEQ without delivering it twice.
+- Layer 1 counts `l1_rounds` on top of the lossless TX bytes: the master per
+  attempted round (also failed ones), the slave per completed read.
+- Layer 2 takes the DATA SEQ from Layer 3, starts the ARQ timer when a DATA
+  frame has been sent, and records the received SEQ only for DATA frames that
+  pass the CRC.
+- Fixed: sending an ACK/NACK cleared `FG_HL_FTTR` and overwrote the queued DATA
+  frame, so High Level data could be lost. `PARSECS_TRANSMIT_APP` checked the
+  slave id with `>` instead of `>=`.
+- Low Level API: `PARSECS_Get_Link_State`, `PARSECS_Get_ARQ_Stats`,
+  `PARSECS_Reset_Link` (hook for a future hot-swap). `PARSECS_CHECK_APP_TX_READY`
+  stays false while a frame waits for its ACK.
+- Demo USB lines end with `link=UP|DOWN retx=N dropped=N`.
+- `PARSECS_L1_FAULT_INJECT_EVERY` (off by default) corrupts every Nth Layer 1
+  byte for hardware tests.
+- Host tests in `test/arq` (`make -C test/arq run`).
+
 ## feature/dual-slave-get-loop
 
 - Second I2C peer: master `MAX_BOARD_COUNT` is 2. Comm stays `0x08` /

@@ -32,6 +32,35 @@ master's `l1_buffer_rx`. The transfer runs under the I2C1/DMA1 interrupts
 while `PARSECS_LowLevelTask` / `PARSECS_Protocol_Interface_Task` / `MyDemoTask`
 run each 1 ms tick.
 
+## Layer 3 retransmission (ARQ)
+
+Sender `S`, receiver `R`, one DATA frame in flight. `RTO` starts at 70 Layer 1
+rounds and doubles on each timeout, up to 280.
+
+    Normal                      CRC error -> NACK            DATA lost -> timeout
+    S                  R        S                  R         S                  R
+    |--- DATA seq=5 -->|        |--- DATA seq=5 -->|  bad    |--- DATA seq=5 -X  |
+    |<-- ACK  seq=5 ---|        |<-- NACK ---------|  CRC    |   ... RTO ...     |
+    |  done            |        |--- DATA seq=5 -->|         |--- DATA seq=5 -->|
+                                |<-- ACK  seq=5 ---|         |<-- ACK  seq=5 ---|
+
+    ACK lost -> duplicate       Peer absent
+    S                  R        S                  R
+    |--- DATA seq=5 -->| deliver|--- DATA seq=5 -X |
+    |  X-- ACK seq=5 --|        |   RTO 70  -> resend 1
+    |   ... RTO ...    |        |   RTO 140 -> resend 2
+    |--- DATA seq=5 -->| same   |   RTO 280 -> resend 3
+    |<-- ACK  seq=5 ---| SEQ,   |   RTO 280 -> drop, LINK_DOWN
+    |  done            | no 2nd |   next TRANSMIT_APP is a probe;
+                         deliver    its ACK -> LINK_UP
+
+Sender flag flow:
+
+    TRANSMIT_APP -> FG_HL_FTTR --(L3: new SEQ)--> FG_LL_FTT --(L2 sent)--> FG_ARQ_WAIT_ACK
+    FG_ARQ_WAIT_ACK --(ACK seq match)--> idle, CHECK_APP_TX_READY true
+    FG_ARQ_WAIT_ACK --(NACK | RTO)-----> FG_ARQ_RETX --(L2 idle)--> FG_LL_FTT (same SEQ)
+    FG_ARQ_WAIT_ACK --(NACK | RTO, ARQ_MAX_RETRIES spent)--> drop frame, PARSECS_LINK_DOWN
+
 ## Boot
 
     main():  HAL_Init -> SystemClock (168 MHz) -> MX_GPIO_Init -> MX_DMA_Init
