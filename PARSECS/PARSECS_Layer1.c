@@ -301,13 +301,15 @@ static void start_round(SLAVE *slave, bool probe)
 	}
 	else
 	{
+		/* HAL refused to start: the controller, not the slave, is the
+		 * problem (BUSY locked by a glitch, handle not READY). Counted for
+		 * probes too: with no slave polled only probes run, and without
+		 * this count nothing would ever trigger the resync that clears it. */
 		bus_state = BUS_IDLE;
 		tx_consume = false;
-		if (!probe)
-		{
-			error_inc();
-			round_done(true);
-		}
+		last_error = hi2c1.ErrorCode;
+		error_inc();
+		round_done(true);
 	}
 }
 
@@ -331,11 +333,9 @@ void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
 		SET_BIT(hi2c->Instance->CR1, I2C_CR1_STOP);
 		bus_state = BUS_IDLE;
 		hp_round_failed(round_slave());
-		if (l1_probe_slave == NULL)
-		{
-			error_inc();
-			round_done(true);
-		}
+		last_error = hi2c->ErrorCode;
+		error_inc();
+		round_done(true);
 	}
 }
 
@@ -366,10 +366,12 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 {
 	if (hi2c->Instance != I2C1) return;
 
-	/* A probe of an address nobody answers ends here with AF every time;
-	 * that is the expected result, not a bus problem. */
+	/* A probe of an address nobody answers ends here with only AF set;
+	 * that is the expected result, not a bus problem. Anything else (BERR,
+	 * ARLO, a glitch while a board is plugged in) is, and must be able to
+	 * lead to a resync even when only probes run. */
 	hp_round_failed(round_slave());
-	if (l1_probe_slave == NULL)
+	if ((l1_probe_slave == NULL) || ((hi2c->ErrorCode & ~HAL_I2C_ERROR_AF) != 0U))
 	{
 		error_inc();
 		round_done(true);

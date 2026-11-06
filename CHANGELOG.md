@@ -12,8 +12,13 @@
 - Probes: while a slot is ABSENT, one tick in `HOTPLUG_PROBE_PERIOD_TICKS` (20)
   sends a probe round to its address (every tick when nothing is polled). It is
   the usual write + repeated-START read with a dummy byte, does not touch the
-  rings, and a NACKed probe does not count as a bus error. Three good probes in
-  a row register the slot. `PARSECS_LAYER1_Probe` is the new Layer 1 entry.
+  rings, and a probe NACKed at the address (only `AF`) does not count as a bus
+  error. Any other probe failure (HAL refusing to start the round, BERR, ARLO,
+  timeout) does, so a controller left with BUSY locked by the contact bounce of
+  a board going in is still resynced when no slave is polled. Without that, the
+  master went silent after all boards were pulled and plugged back
+  (`date_noi_9`). Three good probes in a row register the slot.
+  `PARSECS_LAYER1_Probe` is the new Layer 1 entry.
 - Link reset: before a registered slot is used the master sends a `PARSECS_CMD`
   (`0x9B`) frame with `PARSECS_CMD_LINK_RESET` through the ARQ
   (`PARSECS_Link_Sync_Start`). The receiver restarts its link state

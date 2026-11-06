@@ -171,12 +171,26 @@ within what it can take.
 (20, so 5 % of the ticks) is a probe instead of a data round; with no slave
 polled at all every tick probes. A probe is a normal Layer 1 round (write,
 repeated START, read) to the absent address with a dummy `0x00` out; the byte
-read back is dropped and no ring, `l1_rounds` or bus error statistic is
-touched, so a probe that is NACKed (nobody there) does not count towards
-`MAX_CONSEC_ERRORS` or the 8-of-32 window resync. Probes rotate over the absent
+read back is dropped and no ring or `l1_rounds` is touched. A probe that ends
+with only `AF` set (address NACK, nobody there) is the expected result and does
+not count towards `MAX_CONSEC_ERRORS` or the 8-of-32 window resync. Every other
+probe failure does: HAL refusing to start the round (BUSY locked, handle not
+READY), BERR, ARLO, a round timeout. With no slave polled only probes run, so
+these are the only way a resync can still happen. Probes rotate over the absent
 slots; a slot that answered its last probe is probed again on the next probe
 tick, so a new board is confirmed in `HOTPLUG_ADD_OK_ROUNDS` probe ticks.
 With all slots ACTIVE no probes are sent.
+
+**All boards pulled, then plugged back** (`date_noi_9`, first version of this
+branch): about 30 ms of contact bounce on SDA while the boards went in, then
+both lines high and no START for the rest of the capture (18 s), with no resync
+in the log. The likely cause is the bounce locking the BUSY flag of the
+master's I2C1 (ES0182) or leaving the HAL handle not READY; either way
+`HAL_I2C_Master_Seq_Transmit_DMA` returns `HAL_BUSY` without touching the bus. With slaves polled those refusals
+used to reach `MAX_CONSEC_ERRORS` and the resync cleared BUSY; with only probes
+running they were not counted, so nothing resynced and the boards were never
+found. They are counted now, so 10 refusals in a row
+resync I2C1 and the probes find the boards again.
 
 **Removal.** Layer 1 keeps two saturating counters per slot, written from the
 I2C ISR: `hp_ok_streak` and `hp_fail_streak` (address NACK, bus error or round
