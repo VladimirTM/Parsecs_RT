@@ -145,12 +145,31 @@ static void hp_round_ok(SLAVE *slave)
 	if (slave->hp_ok_streak < UINT8_MAX) slave->hp_ok_streak++;
 }
 
-static void hp_round_failed(SLAVE *slave)
+/* The address was NACKed and nothing else went wrong: the only result that
+ * says the slave is not there. */
+static void hp_round_nacked(SLAVE *slave)
 {
 	if (slave == NULL) return;
 	slave->hp_ok_streak = 0U;
 	if (slave->hp_fail_streak < UINT8_MAX) slave->hp_fail_streak++;
 }
+
+/* Timeout, BERR, ARLO, HAL refusing the read: a bus or controller problem,
+ * typically the contact bounce of another board being plugged in. It says
+ * nothing about this slave, so it does not move it towards removal (in
+ * date_noi_10 27 timeouts in a row took a connected comm out), but it does
+ * break a run of good probes. */
+static void hp_round_inconclusive(SLAVE *slave)
+{
+	if (slave == NULL) return;
+	slave->hp_ok_streak = 0U;
+}
+
+/* While a board goes in or out, rounds can time out every few ms for seconds;
+ * one line per second with a count keeps the log readable. */
+#define TIMEOUT_LOG_PERIOD_MS   1000U
+static uint32_t timeout_log_tick = 0U;
+static uint32_t timeout_log_count = 0U;
 
 static void i2c_quiesce(void)
 {
@@ -332,7 +351,7 @@ void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
 		/* No STOP was sent after the write, so release the bus here. */
 		SET_BIT(hi2c->Instance->CR1, I2C_CR1_STOP);
 		bus_state = BUS_IDLE;
-		hp_round_failed(round_slave());
+		hp_round_inconclusive(round_slave());
 		last_error = hi2c->ErrorCode;
 		error_inc();
 		round_done(true);
@@ -369,8 +388,16 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 	/* A probe of an address nobody answers ends here with only AF set;
 	 * that is the expected result, not a bus problem. Anything else (BERR,
 	 * ARLO, a glitch while a board is plugged in) is, and must be able to
-	 * lead to a resync even when only probes run. */
-	hp_round_failed(round_slave());
+	 * lead to a resync even when only probes run. Only a clean AF counts
+	 * towards taking a slave out. */
+	if (hi2c->ErrorCode == HAL_I2C_ERROR_AF)
+	{
+		hp_round_nacked(round_slave());
+	}
+	else
+	{
+		hp_round_inconclusive(round_slave());
+	}
 	if ((l1_probe_slave == NULL) || ((hi2c->ErrorCode & ~HAL_I2C_ERROR_AF) != 0U))
 	{
 		error_inc();
@@ -448,12 +475,19 @@ static void layer1_master_step(SLAVE *slave, bool probe)
 	{
 		if (++wait_ticks > TRANSACTION_TIMEOUT_TICKS)
 		{
-			hp_round_failed(round_slave());
+			hp_round_inconclusive(round_slave());
 			i2c_resync();
 			led_fault_on();
 			error_inc();
 			wait_ticks = 0U;
-			LOG_SERIAL("[Master] L1 resync (timeout) err=0x%02lX\n", (unsigned long)last_error);
+			timeout_log_count++;
+			if ((HAL_GetTick() - timeout_log_tick) >= TIMEOUT_LOG_PERIOD_MS)
+			{
+				LOG_SERIAL("[Master] L1 resync (timeout) x%lu err=0x%02lX\n",
+				           (unsigned long)timeout_log_count, (unsigned long)last_error);
+				timeout_log_tick = HAL_GetTick();
+				timeout_log_count = 0U;
+			}
 		}
 	}
 	else

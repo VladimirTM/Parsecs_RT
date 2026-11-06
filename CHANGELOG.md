@@ -19,6 +19,11 @@
   master went silent after all boards were pulled and plugged back
   (`date_noi_9`). Three good probes in a row register the slot.
   `PARSECS_LAYER1_Probe` is the new Layer 1 entry.
+- Only an address NACK (HAL `ErrorCode` exactly `AF`) moves a slot towards
+  removal. Timeouts, BERR, ARLO and refused starts are bus problems (often
+  another board being plugged in) and only reset the good-probe streak. In
+  `date_noi_10` they took a connected comm out for a few ms while mobility went
+  in. `L1 resync (timeout)` is logged at most once a second, with a count.
 - Link reset: before a registered slot is used the master sends a `PARSECS_CMD`
   (`0x9B`) frame with `PARSECS_CMD_LINK_RESET` through the ARQ
   (`PARSECS_Link_Sync_Start`). The receiver restarts its link state

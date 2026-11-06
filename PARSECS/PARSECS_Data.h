@@ -169,7 +169,9 @@
  */
 /*!
  * \def HOTPLUG_REMOVE_FAIL_ROUNDS
- * Consecutive failed rounds of one slave before it is taken out of the round-robin.
+ * Consecutive rounds of one slave NACKed at the address (HAL ErrorCode exactly AF) before it is
+ * taken out of the round-robin. Timeouts and bus errors do not count: they come from the bus (often
+ * another board being plugged in), not from this slave being gone.
  * A healthy slave fails no rounds in a row (0 NACKs in 120 000 rounds on the bench), and one
  * resync costs a few rounds, so 24 only trips when the slave is really gone.
  */
@@ -276,7 +278,7 @@ typedef struct
 	uint32_t link_resets;											/**<Bumped by every link reset; the High Level drops its state when it changes*/
 	PARSECS_SLAVE_STATE hp_state;									/**<Hot-plug state (always ACTIVE on a slave node)*/
 	volatile uint8_t hp_ok_streak;									/**<Hot-plug: consecutive completed rounds (Layer 1 ISR, saturates)*/
-	volatile uint8_t hp_fail_streak;								/**<Hot-plug: consecutive failed rounds (Layer 1 ISR, saturates)*/
+	volatile uint8_t hp_fail_streak;								/**<Hot-plug: consecutive address NACKs, reset by a good round (Layer 1 ISR, saturates)*/
 	uint32_t hp_added;												/**<Diagnostic: times the slave became ACTIVE*/
 	uint32_t hp_removed;											/**<Diagnostic: times the slave was taken out of the round-robin*/
 }SLAVE;

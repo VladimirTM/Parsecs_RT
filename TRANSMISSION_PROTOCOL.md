@@ -193,11 +193,21 @@ found. They are counted now, so 10 refusals in a row
 resync I2C1 and the probes find the boards again.
 
 **Removal.** Layer 1 keeps two saturating counters per slot, written from the
-I2C ISR: `hp_ok_streak` and `hp_fail_streak` (address NACK, bus error or round
-timeout). `HOTPLUG_REMOVE_FAIL_ROUNDS` (24) failed rounds in a row take the slot
-out. A healthy slave never comes close (the validation capture had 0 NACKs in
-120 814 rounds) and one resync costs a few rounds. With two slaves that is
-about 48 ms after the board is pulled.
+I2C ISR: `hp_ok_streak` and `hp_fail_streak`. Only a round whose HAL
+`ErrorCode` is exactly `AF` (address NACK, nobody answered) counts as failed;
+`HOTPLUG_REMOVE_FAIL_ROUNDS` (24) of them in a row take the slot out. A
+timeout, BERR, ARLO or a refused start only clears `hp_ok_streak`: it is the
+bus misbehaving, usually because another board is being plugged in, and says
+nothing about this slave. (In `date_noi_10`, plugging mobility in gave 27 round
+timeouts in a row and took the connected comm out for a few ms, costing one
+request, while timeouts still counted.) A healthy slave never comes close (the
+validation capture had 0 NACKs in 120 814 rounds). With two slaves a pulled
+board is out about 48 ms later.
+
+While a board goes in or out, rounds can time out every few ms for seconds
+(`date_noi_10`, 69.5–72.5 s: no START on the bus, ~500 timeouts and ~45
+`MAX_CONSEC_ERRORS` resyncs, then clean probes again). `L1 resync (timeout)` is
+logged at most once a second, with the count since the previous line (`x37`).
 
 **Link reset (CMD `0x9B`).** A slave that comes back may have kept running
 while it was off the bus (old SEQs, an unACKed answer in its TX ring), and the
