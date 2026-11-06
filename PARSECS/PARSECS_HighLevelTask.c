@@ -24,6 +24,11 @@ void PARSECS_Protocol_Interface_Task(void)
 	uint8_t i = 0;
 	for (i = 0; i < MAX_BOARD_COUNT; i++)
 	{
+		if (CORE_TX_Wit_Boards[i].boardConfigured != true)
+		{
+			continue;
+		}
+		PARSECS_Protocol_Interface_Sync_Board(&CORE_TX_Wit_Boards[i]);
 		if (CORE_TX_Wit_Boards[i].boardAvailable == true)
 		{
 			PARSECS_Protocol_Interface_Task_Slave(&CORE_TX_Wit_Boards[i]);

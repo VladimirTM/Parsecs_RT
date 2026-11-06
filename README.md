@@ -8,8 +8,9 @@ node-specific piece: it keeps the I2C DMA byte pump. Layers 2–3 frame
 `SPI_BASE_FRAME` and ACK/NACK. Layers 4, 6 and 7 are the WIT PDU, BER, and
 APP Get/Set/Call path (`PARSECS_Protocol_USER_Send` /
 `PARSECS_Protocol_USER_Receive`). The demo loops a GetRequest / GetResponse
-to both slaves (TypeID `0x01`; comm answers `42`, mobility answers `43`), then
-holds SCL and SDA low before the next round.
+to every slave that is present (TypeID `0x01`; comm answers `42`, mobility
+answers `43`), then holds SCL and SDA low before the next round. Slaves can be
+plugged in and pulled out while the master runs (hot-plug).
 
 Built with STM32CubeIDE / CubeMX. Two separate projects live under
 `PARSECS_RT_master/` and `PARSECS_RT_slave/`. They share `PARSECS/`,
@@ -19,11 +20,40 @@ Built with STM32CubeIDE / CubeMX. Two separate projects live under
 
 ## Wiring
 
-PB6/PB7 (SCL/SDA) tied together across the master and both slaves with a common GND, I2C1 at 400 kHz, 7-bit addressing. Comm slave address `0x08`, mobility slave address `0x09`. See [DIAGRAMS.md](DIAGRAMS.md) for the full pinout diagram.
+PB6/PB7 (SCL/SDA) tied together across the master and both slaves with a common GND, I2C1 at 400 kHz, 7-bit addressing. Comm slave address `0x08`, mobility slave address `0x09` (with hot-plug, any slave index 0..6 uses `0x08`..`0x0E`). See [DIAGRAMS.md](DIAGRAMS.md) for the full pinout diagram.
 
 ---
 
 ## Demos
+
+### Slave hot-plug (`feature/slave-hotplug`)
+
+The master no longer assumes comm and mobility are there. It has a slot for
+each known address (`0x08`..`0x0E`), probes the empty ones now and then, and
+registers a board once it answers three probes in a row. Before the board is
+used, the master restarts the link on both ends with a CMD frame, so a board
+that kept running while unplugged cannot hand over a stale answer or drop the
+first new request as a duplicate. A board that misses 24 rounds in a row
+leaves the round-robin, and its ticks go to the boards that are left: with one
+slave left it is polled every tick instead of every other one, so its round
+trip should drop to about half (not measured on the boards yet). Details:
+[TRANSMISSION_PROTOCOL.md](TRANSMISSION_PROTOCOL.md#hot-plug).
+
+The demo asks each present board in turn and skips the others. New log lines:
+
+    [Master] hotplug mobility ABSENT -> LINKING polled=2
+    [Master] hotplug mobility LINKING -> ACTIVE polled=2
+    [Master] hotplug comm ACTIVE -> ABSENT polled=1
+    [Master] comm removed while waiting, request dropped
+    [Slave] comm link reset by master
+
+To try a board the master has never seen, flash a slave with another index,
+e.g. `-DPARSECS_SLAVE_INDEX=2` (pm, `0x0A`, answers `44`). Every slave must run
+this branch: a slave without the link reset CMD ACKs its address but not the
+CMD, so the master keeps dropping it back to ABSENT.
+
+Plugging into a live bus can glitch SCL/SDA. The rounds that hit the glitch
+fail and the ARQ resends what was lost, so connect GND first.
 
 ### PARSECS High Level over I2C DMA (`feature/dual-slave-get-loop`)
 

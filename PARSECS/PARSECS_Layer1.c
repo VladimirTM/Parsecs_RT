@@ -105,6 +105,10 @@ typedef enum {
 } bus_state_t;
 
 static SLAVE *l1_active_slave = NULL;
+/* Hot-plug probe round in flight to this (absent) slave. Exclusive with
+ * l1_active_slave: a probe sends a dummy byte, drops the byte it reads and
+ * never touches the slave's rings, l1_rounds or the bus error statistics. */
+static SLAVE *l1_probe_slave = NULL;
 static uint16_t active_i2c_address = 0U;
 static volatile uint8_t tx_byte_val;
 static volatile uint8_t rx_byte_val;
@@ -126,6 +130,47 @@ static void round_done(bool failed)
 	PARSECS_IrqUnlock(key);
 }
 
+/* The slave the current round is addressed to, data or probe. */
+static SLAVE *round_slave(void)
+{
+	return (l1_probe_slave != NULL) ? l1_probe_slave : l1_active_slave;
+}
+
+/* Hot-plug streaks. Written here (ISR or the L1 task path), read by
+ * PARSECS_HotPlug_Task. Single byte stores, so no lock is needed. */
+static void hp_round_ok(SLAVE *slave)
+{
+	if (slave == NULL) return;
+	slave->hp_fail_streak = 0U;
+	if (slave->hp_ok_streak < UINT8_MAX) slave->hp_ok_streak++;
+}
+
+/* The address was NACKed and nothing else went wrong: the only result that
+ * says the slave is not there. */
+static void hp_round_nacked(SLAVE *slave)
+{
+	if (slave == NULL) return;
+	slave->hp_ok_streak = 0U;
+	if (slave->hp_fail_streak < UINT8_MAX) slave->hp_fail_streak++;
+}
+
+/* Timeout, BERR, ARLO, HAL refusing the read: a bus or controller problem,
+ * typically the contact bounce of another board being plugged in. It says
+ * nothing about this slave, so it does not move it towards removal (in
+ * date_noi_10 27 timeouts in a row took a connected comm out), but it does
+ * break a run of good probes. */
+static void hp_round_inconclusive(SLAVE *slave)
+{
+	if (slave == NULL) return;
+	slave->hp_ok_streak = 0U;
+}
+
+/* While a board goes in or out, rounds can time out every few ms for seconds;
+ * one line per second with a count keeps the log readable. */
+#define TIMEOUT_LOG_PERIOD_MS   1000U
+static uint32_t timeout_log_tick = 0U;
+static uint32_t timeout_log_count = 0U;
+
 static void i2c_quiesce(void)
 {
 	HAL_NVIC_DisableIRQ(I2C1_EV_IRQn);
@@ -144,6 +189,7 @@ static void i2c_quiesce(void)
 
 	bus_state = BUS_IDLE;
 	l1_active_slave = NULL;
+	l1_probe_slave = NULL;
 	wait_ticks = 0U;
 	tx_consume = false;
 	round_history = 0U;
@@ -232,10 +278,10 @@ static void drive_lines_low(void)
 	hold_wait = 0U;
 }
 
-static void start_round(SLAVE *slave)
+static void start_round(SLAVE *slave, bool probe)
 {
-	bool have_tx = !PARSECS_RingEmpty(&slave->l1_buffer_tx);
-	if (!have_tx && PARSECS_RingFull(&slave->l1_buffer_rx))
+	bool have_tx = (!probe) && !PARSECS_RingEmpty(&slave->l1_buffer_tx);
+	if (!probe && !have_tx && PARSECS_RingFull(&slave->l1_buffer_rx))
 	{
 		return;
 	}
@@ -256,8 +302,12 @@ static void start_round(SLAVE *slave)
 	active_i2c_address = slave->i2c_address;
 
 	/* Counted even if the round fails, so an absent slave still runs down
-	 * its ARQ timeout and ends up LINK_DOWN. */
-	slave->l1_rounds++;
+	 * its ARQ timeout and ends up LINK_DOWN. A probe is not a round of the
+	 * link, so it does not count. */
+	if (!probe)
+	{
+		slave->l1_rounds++;
+	}
 	bus_state  = BUS_SENDING;
 	wait_ticks = 0U;
 	/* FIRST_FRAME: no STOP after the write, the read follows with a repeated
@@ -270,8 +320,13 @@ static void start_round(SLAVE *slave)
 	}
 	else
 	{
+		/* HAL refused to start: the controller, not the slave, is the
+		 * problem (BUSY locked by a glitch, handle not READY). Counted for
+		 * probes too: with no slave polled only probes run, and without
+		 * this count nothing would ever trigger the resync that clears it. */
 		bus_state = BUS_IDLE;
 		tx_consume = false;
+		last_error = hi2c1.ErrorCode;
 		error_inc();
 		round_done(true);
 	}
@@ -296,6 +351,8 @@ void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
 		/* No STOP was sent after the write, so release the bus here. */
 		SET_BIT(hi2c->Instance->CR1, I2C_CR1_STOP);
 		bus_state = BUS_IDLE;
+		hp_round_inconclusive(round_slave());
+		last_error = hi2c->ErrorCode;
 		error_inc();
 		round_done(true);
 	}
@@ -309,23 +366,43 @@ void HAL_I2C_MasterRxCpltCallback(I2C_HandleTypeDef *hi2c)
 	{
 		PARSECS_RingWriteOne(&l1_active_slave->l1_buffer_rx, rx_byte_val);
 	}
-	else
+	else if (l1_active_slave != NULL)
 	{
 		led_warn();
 	}
 	bus_state = BUS_IDLE;
+	hp_round_ok(round_slave());
 	led_heartbeat();
 	led_fault_off();
 	error_reset();
-	round_done(false);
+	if (l1_probe_slave == NULL)
+	{
+		round_done(false);
+	}
 }
 
 void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 {
 	if (hi2c->Instance != I2C1) return;
 
-	error_inc();
-	round_done(true);
+	/* A probe of an address nobody answers ends here with only AF set;
+	 * that is the expected result, not a bus problem. Anything else (BERR,
+	 * ARLO, a glitch while a board is plugged in) is, and must be able to
+	 * lead to a resync even when only probes run. Only a clean AF counts
+	 * towards taking a slave out. */
+	if (hi2c->ErrorCode == HAL_I2C_ERROR_AF)
+	{
+		hp_round_nacked(round_slave());
+	}
+	else
+	{
+		hp_round_inconclusive(round_slave());
+	}
+	if ((l1_probe_slave == NULL) || ((hi2c->ErrorCode & ~HAL_I2C_ERROR_AF) != 0U))
+	{
+		error_inc();
+		round_done(true);
+	}
 	last_error = hi2c->ErrorCode;
 	tx_consume = false;
 	bus_state = BUS_IDLE;
@@ -335,6 +412,7 @@ void PARSECS_Layer1_Init(void)
 {
 	bus_state = BUS_IDLE;
 	l1_active_slave = NULL;
+	l1_probe_slave = NULL;
 	active_i2c_address = 0U;
 	wait_ticks = 0U;
 	hold_requested = false;
@@ -386,7 +464,7 @@ void PARSECS_Layer1_ReleaseLines(void)
 	i2c_restore();
 }
 
-void PARSECS_LAYER1(SLAVE *slave)
+static void layer1_master_step(SLAVE *slave, bool probe)
 {
 	if (hold_requested || (HAL_GetTick() < L1_STARTUP_MS))
 	{
@@ -397,11 +475,19 @@ void PARSECS_LAYER1(SLAVE *slave)
 	{
 		if (++wait_ticks > TRANSACTION_TIMEOUT_TICKS)
 		{
+			hp_round_inconclusive(round_slave());
 			i2c_resync();
 			led_fault_on();
 			error_inc();
 			wait_ticks = 0U;
-			LOG_SERIAL("[Master] L1 resync (timeout) err=0x%02lX\n", (unsigned long)last_error);
+			timeout_log_count++;
+			if ((HAL_GetTick() - timeout_log_tick) >= TIMEOUT_LOG_PERIOD_MS)
+			{
+				LOG_SERIAL("[Master] L1 resync (timeout) x%lu err=0x%02lX\n",
+				           (unsigned long)timeout_log_count, (unsigned long)last_error);
+				timeout_log_tick = HAL_GetTick();
+				timeout_log_count = 0U;
+			}
 		}
 	}
 	else
@@ -411,8 +497,17 @@ void PARSECS_LAYER1(SLAVE *slave)
 
 	if (bus_state == BUS_IDLE)
 	{
-		l1_active_slave = slave;
-		start_round(slave);
+		if (probe)
+		{
+			l1_active_slave = NULL;
+			l1_probe_slave = slave;
+		}
+		else
+		{
+			l1_active_slave = slave;
+			l1_probe_slave = NULL;
+		}
+		start_round(slave, probe);
 	}
 
 	if (error_count >= MAX_CONSEC_ERRORS)
@@ -431,6 +526,19 @@ void PARSECS_LAYER1(SLAVE *slave)
 		error_reset();
 		LOG_SERIAL("[Master] L1 resync (window) err=0x%02lX\n", (unsigned long)last_error);
 	}
+}
+
+void PARSECS_LAYER1(SLAVE *slave)
+{
+	layer1_master_step(slave, false);
+}
+
+/* One round to an absent slave's address, to see whether it answers. The
+ * result only feeds the hot-plug streaks. Same write + repeated-START read as
+ * a data round, so the slave sees nothing new on the bus. */
+void PARSECS_LAYER1_Probe(SLAVE *slave)
+{
+	layer1_master_step(slave, true);
 }
 
 #else /* slave */

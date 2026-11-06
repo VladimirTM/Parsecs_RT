@@ -65,7 +65,8 @@ file(GLOB_RECURSE SOURCES
 )
 list(APPEND SOURCES ${CMAKE_SOURCE_DIR}/../ringbuffer/ringbuf.c)
 list(APPEND SOURCES ${CMAKE_SOURCE_DIR}/../berlib/src/berc/ber.c)
-file(GLOB PARSECS_SOURCES ${CMAKE_SOURCE_DIR}/../PARSECS/*.c)
+# CONFIGURE_DEPENDS: a new file in PARSECS/ is picked up on the next build without a manual CMake reload
+file(GLOB PARSECS_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/../PARSECS/*.c)
 list(APPEND SOURCES ${PARSECS_SOURCES})
 
 set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/STM32F407VGTX_FLASH.ld)

@@ -16,6 +16,10 @@
 //! ACKs its SEQ. A NACK or a timeout (counted in Layer 1 rounds of that slave) resends it with the
 //! same SEQ, up to \ref ARQ_MAX_RETRIES times, after which the frame is dropped and the link is
 //! reported \ref PARSECS_LINK_DOWN. The receiving side re-ACKs a repeated SEQ without delivering it again.
+//!
+//! A \ref PARSECS_CMD frame goes through the same ARQ. \ref PARSECS_CMD_LINK_RESET makes the receiver
+//! restart its link state (\ref PARSECS_Link_Reset_Local); the master sends it whenever it registers a
+//! slave, and drops the slave's DATA until that CMD is ACKed (\ref SLAVE::link_sync_pending).
 #include "PARSECS_Layer3.h"
 
 static bool PARSECS_L2_TX_Idle(SLAVE *slave)
@@ -34,7 +38,7 @@ static void PARSECS_ARQ_Load_Frame(SLAVE *slave)
 	memcpy(slave->spi_packet_tx.app_buffer, slave->arq_buffer, slave->arq_length);
 	slave->spi_packet_tx.app_buffer_length = slave->arq_length;
 	slave->spi_packet_tx.seq_no = slave->arq_seq;
-	slave->spi_packet_tx.packet_type = TYPE_DATA;
+	slave->spi_packet_tx.packet_type = slave->arq_type;
 	slave->STATUS_FLAG |= FG_LL_FTT;
 }
 
@@ -99,7 +103,7 @@ static void PARSECS_ARQ_Check_Timeout(SLAVE *slave)
 //! The task is executed for a slave devices identified by a pointer to a SLAVE structure. If there more slave nodes present
 //! then this function should be called for each slave.
 //! The implementation is node and platform independent.
-//! Priority: ACK, NACK, CMD, retransmission of the stored DATA frame, new DATA frame.
+//! Priority: ACK, NACK, retransmission of the stored frame, new frame (DATA or CMD, both queued in arq_buffer).
 //! \param slave A pointer to a SLAVE structure that identifies the slave that this task will be executed for
 //! \return None
 //! \private
@@ -127,12 +131,6 @@ void PARSECS_TRANSMIT_LAYER3(SLAVE *slave)
 			slave->STATUS_FLAG |= FG_LL_FTT;					//setez flagul de frame  to transmit
 			slave->STATUS_FLAG &= ~FG_NACK;						//resetez flagul de NACK
 		}
-	}
-	if((FG_CMD & slave->STATUS_FLAG) != 0)
-	{
-		slave->spi_packet_tx.packet_type = PARSECS_CMD;
-		slave->STATUS_FLAG |= FG_LL_FTT;					//setez flagul de frame  to transmit
-		slave->STATUS_FLAG &= ~FG_CMD;
 	}
 	if ((FG_ARQ_RETX & slave->STATUS_FLAG) != 0)
 	{
@@ -176,6 +174,11 @@ static void PARSECS_RECEIVE_LAYER3_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet,
 				slave->link_state = PARSECS_LINK_UP;
 				slave->arq_retries = 0;
 				slave->arq_rto = ARQ_RTO_ROUNDS;
+				if (slave->arq_type == PARSECS_CMD)
+				{
+					// the peer has restarted its link: from now on its DATA is new
+					slave->link_sync_pending = false;
+				}
 			}
 			break;
 		}
@@ -202,12 +205,32 @@ static void PARSECS_RECEIVE_LAYER3_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet,
 			{
 				slave->last_delivered_rx_seq = packet->seq_no;
 				slave->rx_seq_valid = true;
-				slave->STATUS_FLAG |= new_data_flag; 	// setez ca am primit un nou frame de date catre nivelul applicatie
+				if (slave->link_sync_pending)
+				{
+					// sent before the peer saw our link reset: ACKed so the peer stops, but stale
+					packet->packet_ok = 0;
+				}
+				else
+				{
+					slave->STATUS_FLAG |= new_data_flag; 	// setez ca am primit un nou frame de date catre nivelul applicatie
+				}
 			}
+			break;
+		}
+		case PARSECS_CMD:
+		{
+			if ((packet->packet_length >= 1U) && (packet->app_buffer[0] == PARSECS_CMD_LINK_RESET))
+			{
+				// a resent CMD (our ACK was lost) resets again, which is harmless before any DATA
+				PARSECS_Link_Reset_Local(slave, packet->seq_no);
+			}
+			packet->packet_ok = 0;
+			slave->STATUS_FLAG |= FG_ACK;
 			break;
 		}
 		default:
 		{
+			packet->packet_ok = 0;
 			break;
 		}
 	}
