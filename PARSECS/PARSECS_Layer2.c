@@ -15,6 +15,12 @@
 #include "PARSECS_Layer2.h"
 #include "PARSECS_Port.h"
 
+/* While the bus works, Layer 1 delivers a byte (data or dummy) on almost every
+ * call. A frame that gets no byte for this many calls lost its tail to a resync
+ * or, on a slave, to the master's bus hold, and would otherwise swallow the
+ * start of the next frame. */
+#define L2_RX_IDLE_CALLS_MAX	20U
+
 //! The PARSECS Layer 2 transmit (TX) flow task implementation
 //!
 //! This function is used to implement the PARSECS Layer 2 transmission over the SPI bus
@@ -55,7 +61,7 @@ void PARSECS_TRANSMIT_LAYER2(SLAVE *slave)
 			{
 				if (slave->spi_packet_tx.packet_type == TYPE_DATA)
 				{
-					slave->spi_packet_tx.seq_no = slave->current_seq_no++; //nu am ACK/NACK	? atunci incrementez sequence no
+					// SEQ is assigned by Layer 3 so a retransmission reuses the original value
 					slave->last_transmitted_data_packet_sequence_number = slave->spi_packet_tx.seq_no;
 				}
 				else
@@ -102,6 +108,13 @@ void PARSECS_TRANSMIT_LAYER2(SLAVE *slave)
 				PARSECS_RingWriteOne(&slave->l1_buffer_tx, (uint8_t)(slave->uw_crc16 & 0xFF));
 				slave->STATUS_FLAG &= ~FG_LL_FTIP;  //resetez flagul de frame transmit in progress
 				slave->STATUS_FLAG &= ~FG_LL_FTT;   //resetez flagul de frame  to transmit			
+				if (slave->spi_packet_tx.packet_type == TYPE_DATA)
+				{
+					// whole frame is in the L1 ring: start the ARQ retransmission timer
+					slave->STATUS_FLAG |= FG_ARQ_WAIT_ACK;
+					slave->arq_elapsed = 0;
+					slave->arq_last_round = slave->l1_rounds;
+				}
 				slave->ub_L2_TransState = 0;
 				break;
 			}
@@ -180,7 +193,6 @@ uint8_t PARSECS_RECEIVE_LAYER2_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet)
 				if (packet->frame_in_progress == true)
 				{
 					slave->ub_L2_RecState = 3;					   // ma duc in starea 2
-					slave->last_received_packet_sequence_number = packet->seq_no;
 				}
 				else
 				{	
@@ -235,6 +247,11 @@ uint8_t PARSECS_RECEIVE_LAYER2_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet)
 					packet->packet_ok = 1; //am un pachet bun
 					slave->ub_L2_RecState = 0;			//resetez automatul si ma duc in starea 0
 					slave->STATUS_FLAG &= ~FG_NACK;     // RESETEZ FALGUL DE NACK
+					// only a CRC-checked DATA SEQ may be echoed back in our ACK; an incoming ACK/NACK must not overwrite it
+					if (packet->packet_type == TYPE_DATA)
+					{
+						slave->last_received_packet_sequence_number = packet->seq_no;
+					}
 				}
 				else
 				{
@@ -259,9 +276,28 @@ uint8_t PARSECS_RECEIVE_LAYER2_PROCESS(SLAVE *slave, SPI_BASE_FRAME *packet)
 //! \param slave A pointer to a SLAVE structure that identifies the slave that this task will be executed for
 //! \return None
 //! \private
+static void PARSECS_RECEIVE_LAYER2_WATCHDOG(SLAVE *slave)
+{
+	if ((slave->ub_L2_RecState == 0) || !PARSECS_RingEmpty(&slave->l1_buffer_rx))
+	{
+		slave->ub_L2_RecIdleCalls = 0;
+		return;
+	}
+	if (++slave->ub_L2_RecIdleCalls < L2_RX_IDLE_CALLS_MAX)
+	{
+		return;
+	}
+	slave->ub_L2_RecIdleCalls = 0;
+	slave->ub_L2_RecState = 0;
+	slave->spi_packet_rx_1.frame_in_progress = false;
+	slave->spi_packet_rx_2.frame_in_progress = false;
+	slave->STATUS_FLAG |= FG_NACK;
+}
+
 void PARSECS_RECEIVE_LAYER2(SLAVE *slave)
 {
 	uint8_t result = 0;
+	PARSECS_RECEIVE_LAYER2_WATCHDOG(slave);
 	if (slave->spi_packet_rx_1.frame_in_progress == true)
 	{
 		result = PARSECS_RECEIVE_LAYER2_PROCESS(slave, &slave->spi_packet_rx_1);

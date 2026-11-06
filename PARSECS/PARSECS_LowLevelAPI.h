@@ -32,6 +32,10 @@ uint8_t PARSECS_GetApp_rx_buffer_max_length(void);
 int16_t PARSECS_Get_last_ACKed_packet_sequence_number(uint8_t slave_id);
 int16_t PARSECS_Get_last_NACKed_packet_sequence_number(uint8_t slave_id);
 
+int8_t PARSECS_Get_Link_State(uint8_t slave_id);
+int8_t PARSECS_Get_ARQ_Stats(uint8_t slave_id, uint32_t *retransmissions, uint32_t *link_down_events);
+int8_t PARSECS_Reset_Link(uint8_t slave_id);
+
 
 #endif
 
